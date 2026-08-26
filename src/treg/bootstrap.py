@@ -92,6 +92,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ('/legal.css', ('GET',), 'legal_css'),
     ('/terms', ('GET',), 'terms_page'),
     ('/privacy', ('GET',), 'privacy_page'),
+    ('/connectors/claude', ('GET',), 'claude_connector_page'),
     ('/adtrack.js', ('GET',), 'adtrack_js'),
     ('/resources', ('GET',), 'resources_page'),
     ('/usecase.css', ('GET',), 'usecase_css'),
@@ -101,6 +102,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ('/oauth/revoke', ('POST',), 'oauth_revoke'),
     ('/oauth/token', ('POST',), 'oauth_token'),
     ('/.well-known/oauth-protected-resource/mcp', ('GET',), 'oauth_protected_resource'),
+    ('/.well-known/oauth-protected-resource/mcp/v2', ('GET',), 'oauth_protected_resource_v2'),
     ('/.well-known/oauth-protected-resource', ('GET',), 'oauth_protected_resource'),
     ('/.well-known/oauth-authorization-server', ('GET',), 'oauth_authorization_server'),
     ('/.well-known/openai-apps-challenge', ('GET',), 'openai_apps_challenge'),
@@ -236,6 +238,7 @@ _CONTROL_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
 })
 _DATAPLANE_ROUTE_KEYS: frozenset[RouteKey] = frozenset({
     ("/call/{rest:path}", ("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"), "call_tool"),
+    ("/catalog/call/{rest:path}", ("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"), "call_catalog_endpoint"),
 })
 
 ROLE_BACKGROUND_TASKS: dict[AppRole, tuple[str, ...]] = {
@@ -408,7 +411,7 @@ def _lifespan(api_module, role: AppRole):
             if role == "dataplane" or _mcp is None:
                 yield
             else:
-                async with _mcp.mcp_lifespan():
+                async with _mcp.all_mcp_lifespans():
                     yield
         finally:
             if ads_task is not None:
@@ -450,6 +453,8 @@ def create_app(role: AppRole = "all") -> FastAPI:
     _install_head_and_openapi(app)
 
     if role != "dataplane" and _mcp is not None:
+        # The nested mount must be registered first or Starlette's /mcp parent mount consumes it.
+        app.mount("/mcp/v2", _mcp.directory_mcp_app)
         app.mount("/mcp", _mcp.mcp_app)
 
     startup_checks = list(ROLE_STARTUP_CHECKS[role])

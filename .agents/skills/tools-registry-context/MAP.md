@@ -19,6 +19,7 @@ Regenerate via `scripts/build-map.py`.
 | `alembic/env.py` | architecture/data-model.md |
 | `alembic/versions/0001_baseline_current_schema.py` | architecture/data-model.md |
 | `assets/brand/og-card.html` | interface/seo.md |
+| `docs/CLAUDE-CONNECTOR-SUBMISSION.md` | architecture/mcp-oauth.md |
 | `dsh/cordis.patch.yml` | interface/skill.md |
 | `dsh/index.js` | interface/skill.md |
 | `examples/proxy-demo/server.js` | architecture/local-proxy.md |
@@ -122,6 +123,7 @@ Regenerate via `scripts/build-map.py`.
 | `src/treg/timeutil.py` | architecture/data-model.md, interface/api.md |
 | `src/treg/web/adtrack.js` | architecture/ads-conversions.md |
 | `src/treg/web/catalog.css` | interface/seo.md |
+| `src/treg/web/claude-connector.html` | architecture/mcp-oauth.md |
 | `src/treg/web/connect-demo.html` | architecture/mcp-oauth.md |
 | `src/treg/web/index.html` | interface/dashboard.md, interface/landing-sandbox.md, interface/onboarding.md, interface/seo.md |
 | `src/treg/web/install.sh` | interface/landing-sandbox.md |
@@ -152,7 +154,7 @@ Regenerate via `scripts/build-map.py`.
 | `architecture/import-boundaries.md` | `pyproject.toml`, `ci.yml`, `test_import_lightness.py` |
 | `architecture/local-proxy.md` | `localproxy.py`, `server.js` |
 | `architecture/local-run.md` | `localrun.py`, `egress.py`, `fsjail.py` |
-| `architecture/mcp-oauth.md` | `mcp.py`, `mcp_oauth.py`, `connect-demo.html` |
+| `architecture/mcp-oauth.md` | `mcp.py`, `mcp_oauth.py`, `connect-demo.html`, `claude-connector.html`, `CLAUDE-CONNECTOR-SUBMISSION.md` |
 | `architecture/money.md` | `ledger.py`, `models.py`, `billing.py`, `reconcile.py`, `referrals.py`, `api.py`, `admin.py` |
 | `architecture/multi-tenancy.md` | `models.py`, `api.py`, `dependencies.py`, `db.py`, `test_router_dependencies.py` |
 | `architecture/proxy-model.md` | `proxy.py`, `api.py` |

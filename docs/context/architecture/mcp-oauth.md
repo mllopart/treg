@@ -5,6 +5,8 @@ sources:
   - src/treg/mcp.py
   - src/treg/mcp_oauth.py
   - src/treg/web/connect-demo.html
+  - src/treg/web/claude-connector.html
+  - docs/CLAUDE-CONNECTOR-SUBMISSION.md
 related:
   - architecture/auth-secrets.md
   - architecture/proxy-model.md
@@ -14,11 +16,16 @@ related:
 
 # MCP
 
-Everything else in treg is reached by a CLI or an HTTP call. This is the door an **assistant** comes
-through: ChatGPT, Claude Code, Cursor, or anything else that speaks the Model Context Protocol. It is
-mounted at `/mcp/` on the same app, so there is one deployment, one database and one set of rules.
+Everything else in treg is reached by a CLI or an HTTP call. These are the doors an **assistant**
+comes through: ChatGPT, Claude, Claude Code, Cursor, or anything else that speaks the Model Context
+Protocol. Both are mounted on the same app, so there is one deployment, one database and one set of
+enforcement rules:
 
-## Six tools, and why only six
+- `/mcp/` is the legacy surface: catalog endpoints plus team-owned tools and imported skills.
+- `/mcp/v2/` is the additive catalog-only surface submitted to Claude's Connectors Directory. It
+  cannot list or invoke arbitrary team-owned tools, even when one has the same name as a catalog id.
+
+## Legacy `/mcp/`: six tools, unchanged
 
 | Tool | Job |
 |---|---|
@@ -59,14 +66,44 @@ and found nothing can file the gap in the same session — and the miss itself i
 `SearchMiss` row (`audit.record_search_miss`, `source="mcp"`): this tool reads the catalog
 in-process, so the HTTP route's own miss logging never sees an MCP agent's empty search.
 
+## Directory `/mcp/v2/`: six catalog-only tools
+
+| Tool | Title | Annotation contract |
+|---|---|---|
+| `catalog_search` | Search Treg Catalog | read-only, closed-world |
+| `catalog_get` | Get Catalog Endpoint | read-only, closed-world |
+| `catalog_call_read` | Call a Read Endpoint | read-only, open-world |
+| `catalog_call_write` | Call a Write Endpoint | destructive, open-world |
+| `balance` | Check Treg Balance | read-only, closed-world |
+| `catalog_request` | Request a Catalog Capability | additive, non-destructive, closed-world |
+
+The call split is enforced from catalog data, not from a method supplied by the model.
+`catalog_call_read` accepts only entries declared as GET, HEAD or OPTIONS;
+`catalog_call_write` accepts only POST, PUT, PATCH or DELETE. Neither schema exposes an arbitrary
+method, URL, passthrough path or team-tool name. Tool descriptions are neutral and narrowly factual:
+they explain scope, price and possible effects without telling Claude to prefer Treg.
+
+`directory_mcp` is a separate MCP server object, mounted before the parent `/mcp` mount so Starlette
+cannot consume its path. `all_mcp_lifespans()` starts both transports because Starlette does not run
+mounted-app lifespans automatically. The output TypedDicts are shared with v1, preserving the
+optional-and-nullable structured-output rules below and returning provider payloads unchanged.
+
 ## In-process, not over the network
 
 Tools reach the rest of treg through `httpx.ASGITransport` against our own app — a real request
 through the real routes, without a socket. That matters because the enforcement rules (deny rules,
 capability pins, per-member tool access, the credential ladder, metering) live in those routes. A
 second path that "just read the database" would be a second implementation of every one of them,
-drifting quietly. The in-process client stamps `X-Treg-Client: mcp` (attribution, never a gate), so
-MCP traffic is distinguishable from unreported CLI traffic in the audit trail and analytics.
+drifting quietly. The in-process client stamps `X-Treg-Client: mcp` for legacy calls and
+`X-Treg-Client: claude-connector` for v2 provider calls (attribution, never a gate), so directory
+adoption, failures, latency and spend are distinguishable in the audit trail and analytics.
+
+V2 calls use the internal `/catalog/call/{endpoint_id}` API route. That route skips team-tool name
+resolution and requires an exact curated catalog id, preventing an exact same-named team tool from
+shadowing the endpoint. It then rejoins the existing marketplace call path, retaining the provider
+credential ladder (including the user's credential), ACL and deny rules, caps, metering, audit,
+idempotency and faithful relay. The route is hidden from public OpenAPI because it is an internal
+boundary for reviewed catalog-only surfaces, not an advertised general call API.
 
 The catalog is the one exception: read straight from `catalog_store`, which is already parsed in
 memory, so a search answers in about a millisecond. That is a **speed** choice, not a permission one.
@@ -196,7 +233,9 @@ implementation in front of the first.
 
 The transport's own DNS-rebinding host check (421) and Origin check (403) sit *behind* this
 middleware, so a credentialed request with a bad host or origin is still refused by them — auth does
-not mask the transport guard.
+not mask the transport guard. The origin allow-list contains exact origins rather than wildcards;
+`https://claude.ai` is explicitly allowed for the hosted connector UI and unknown origins remain
+refused.
 
 `RequireAuthForProtectedTools` buffers the POST body only long enough to classify that request. It
 then replays the consumed request messages and delegates every later `receive()` call to the
@@ -228,16 +267,32 @@ A test asserts that calling without it raises rather than defaulting to permissi
 that is valid, well-formed and silently useless — the failure then surfaces at the first tool call as
 "not signed in", pointing the reader at authentication when the problem was the audience.
 
-**The audience set is canonical + legacy** (`mcp_resource_audiences()`: `public_url` plus
-`config.PUBLIC_HOST_ALIASES` — the treg.superdesign.dev → treg.to move, SYMMETRIC so grants
-minted on either name survive a `TREG_PUBLIC_URL` flip in either direction). A pre-move grant carries
-the old resource URL as its audience for its whole lifetime, because refresh reissues the audience
-that was consented to (`row.resource`); validating against the canonical URL alone would 401 every
-pre-move grant with refresh unable to recover. The transport validates via `read_access_token_any`,
-and `/oauth/token` treats the two names as the same resource (`api._same_mcp_resource`).
-Slash-variant spellings are healed by `normalize_resource()` at every store/mint/compare site:
-authorize accepts `…/mcp` via a forgiving compare, and a token whose audience kept that spelling
-would fail the exact audience match forever.
+**Each MCP version has its own audience set.** V1 metadata is served at the root and
+`/.well-known/oauth-protected-resource/mcp`; v2 metadata is served at
+`/.well-known/oauth-protected-resource/mcp/v2` and names `/mcp/v2/` exactly. A v2 token fails on
+`/mcp/`, and a v1 token fails on `/mcp/v2/`.
+
+Within each version the audience set is canonical + legacy (`mcp_resource_audiences(version)`:
+`public_url` plus `config.PUBLIC_HOST_ALIASES` — the treg.superdesign.dev → treg.to move,
+SYMMETRIC so grants minted on either name survive a `TREG_PUBLIC_URL` flip in either direction). A
+pre-move grant carries the old resource URL as its audience for its whole lifetime, because refresh
+reissues the audience that was consented to (`row.resource`); validating against the canonical URL
+alone would 401 every pre-move grant with refresh unable to recover. The transport validates via
+`read_access_token_any`, and `/oauth/token` treats host and slash aliases as the same resource only
+within one MCP version (`api._same_mcp_resource`). Slash-variant spellings are healed by
+`normalize_resource()` at every store/mint/compare site without ever crossing MCP versions.
+
+## Claude directory documentation and release gate
+
+`/connectors/claude` publishes the community connector's setup, catalog-only scope, pricing, data
+flow, tool behavior, disconnection, privacy and support information. It deliberately describes Treg
+as a third-party/community connector until Anthropic grants a verified label.
+
+`docs/CLAUDE-CONNECTOR-SUBMISSION.md` is the owner runbook: directory fields, Claude.ai Owner access,
+the dedicated populated reviewer team with $10 balance and the normal $5 daily cap, secure credential
+handling, MCP Inspector evidence, mandatory production custom-connector prompts, Claude Code/Desktop
+smoke tests, submission attestations, monitoring and rollback. No reviewer credential or provider
+secret belongs in the repository or test evidence.
 
 ## Two doors in, one row out
 

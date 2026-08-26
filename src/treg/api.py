@@ -1648,11 +1648,12 @@ def _wrong_resource(resource: str) -> str | None:
     if not resource:
         return None
     canonical = mcp_oauth.mcp_resource_url()
-    # The legacy hosts' resource URLs stay valid: a pre-move client discovered its `resource` from
-    # the old domain's metadata and will keep sending it for the lifetime of the grant.
-    if any(resource.rstrip("/") == aud.rstrip("/") for aud in mcp_oauth.mcp_resource_audiences()):
+    # Each reviewed MCP surface is a distinct OAuth resource. Host aliases and slash spellings are
+    # accepted within a version, but v1 and v2 never normalize into one another.
+    if mcp_oauth.mcp_resource_version(resource) is not None:
         return None
-    return (f"this server issues tokens for {canonical} only — use the `resource` value from "
+    return (f"this server issues tokens for {canonical} or {mcp_oauth.mcp_resource_url('v2')} only "
+            "— use the `resource` value from "
             f"/.well-known/oauth-protected-resource")
 
 
@@ -1666,8 +1667,9 @@ def _same_mcp_resource(a: str, b: str) -> bool:
     na, nb = mcp_oauth.normalize_resource(a), mcp_oauth.normalize_resource(b)
     if a == b or na == nb:
         return True
-    auds = mcp_oauth.mcp_resource_audiences()
-    return na in auds and nb in auds
+    va = mcp_oauth.mcp_resource_version(na)
+    vb = mcp_oauth.mcp_resource_version(nb)
+    return va is not None and va == vb
 
 
 def _oauth_error(redirect_uri: str, state: str, error: str, desc: str = ""):
@@ -2022,6 +2024,15 @@ async def oauth_protected_resource():
     from . import mcp_oauth
 
     return JSONResponse(mcp_oauth.protected_resource_metadata(),
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/.well-known/oauth-protected-resource/mcp/v2", include_in_schema=False)
+async def oauth_protected_resource_v2():
+    """Protected-resource metadata for the catalog-only directory connector."""
+    from . import mcp_oauth
+
+    return JSONResponse(mcp_oauth.protected_resource_metadata("v2"),
                         headers={"Cache-Control": "public, max-age=3600"})
 
 
@@ -9017,17 +9028,31 @@ async def call_tool(
     drop_params: set[str] = set()
     mk: MarketplaceCall | None = None
     own_tool_miss: dict | None = None
-    try:
-        tool, upstream_url = await _resolve_call(rest, caller, db)
-    except HTTPException as exc:
-        # Not a tool → maybe a marketplace endpoint id (`treg call tikhub.tiktok.video.comments`).
-        # Only the 404 falls through, so an org tool with the same name always wins.
-        ep = _catalog_endpoint_for(rest) if exc.status_code == 404 else None
+    catalog_only = bool(getattr(request.state, "catalog_only", False))
+    if catalog_only:
+        # The reviewed directory surface is deliberately narrower than /call: the caller must name
+        # one real catalog endpoint, and a same-named org tool must NOT shadow it. The credential
+        # ladder below still lets that endpoint use the team's provider credential when available;
+        # what is excluded is arbitrary team-tool path resolution.
+        ep = _catalog_endpoint_for(rest)
         if ep is None:
-            raise
-        if (isinstance(exc.detail, dict)
-                and str(exc.detail.get("hint", "")).startswith("your org has tool ")):
-            own_tool_miss = exc.detail
+            raise HTTPException(status_code=404, detail=(
+                f"unknown catalog endpoint {rest!r} — use catalog_search for a valid endpoint id"))
+    else:
+        try:
+            tool, upstream_url = await _resolve_call(rest, caller, db)
+        except HTTPException as exc:
+            # Not a tool → maybe a marketplace endpoint id (`treg call tikhub.tiktok.video.comments`).
+            # Only the 404 falls through, so an org tool with the same name always wins.
+            ep = _catalog_endpoint_for(rest) if exc.status_code == 404 else None
+            if ep is None:
+                raise
+            if (isinstance(exc.detail, dict)
+                    and str(exc.detail.get("hint", "")).startswith("your org has tool ")):
+                own_tool_miss = exc.detail
+        else:
+            ep = None
+    if ep is not None:
         try:
             mk = await _resolve_marketplace_call(ep, request, caller, db)
         except HTTPException as mkexc:
@@ -9364,6 +9389,27 @@ async def call_tool(
                                 media_type="", charged_micro=0, metered=False)
     response.headers["X-Treg-Call-Id"] = call_ref
     return response
+
+
+@app.api_route(
+    "/catalog/call/{rest:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
+async def call_catalog_endpoint(
+    rest: str,
+    request: Request,
+    caller: Caller = Depends(require_member),
+    db: AsyncSession = Depends(get_session),
+):
+    """Call exactly one catalog endpoint, never an arbitrary team-tool path.
+
+    This is the API boundary used by reviewed catalog-only MCP surfaces. It delegates to the same
+    implementation as /call so credential injection, ACLs, deny rules, caps, metering, audit,
+    idempotency and faithful relay remain single-sourced.
+    """
+    request.state.catalog_only = True
+    return await call_tool(rest, request, caller, db)
 
 
 # ---- server-side CLI execution (Tier 0 `treg run`) ---------------------------------------

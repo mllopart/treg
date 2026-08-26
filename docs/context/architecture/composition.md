@@ -21,7 +21,7 @@ at their legacy registration points. It then calls the factory once at EOF so th
 documented `treg.api:app` import path remains the default `all` role.
 
 The factory owns concrete assembly: the three pure-ASGI middleware registrations, five exception handlers,
-static mounts, optional MCP mount and lifespan, GET-to-HEAD widening, the OpenAPI wrapper that hides
+static mounts, optional MCP mounts and lifespans, GET-to-HEAD widening, the OpenAPI wrapper that hides
 implied HEAD operations, shared HTTP client creation, startup work, shutdown drains, and the Ads
 conversion worker. Registration order is compatibility behavior. The four stage-0 snapshots stay
 byte-identical for `role="all"` unless that composition intentionally changes.
@@ -51,14 +51,18 @@ Every created app exposes `app.state.role_manifest` with explicit `routes`, `bac
 
 | Role | HTTP routes and mounts | Background tasks | Startup checks |
 |---|---|---|---|
-| `all` | The complete existing surface, including `/run`, static files, and `/mcp` | Ads conversion worker when enabled | DB init, provider-tool backfill, single-user bootstrap, HTTP client, MCP lifespan |
-| `dataplane` | Only `/call/{rest:path}`; no `/run`, static files, docs, OpenAPI, or MCP | None | DB init, provider-tool backfill, HTTP client |
-| `control` | Everything except `/call/{rest:path}`; includes `/run`, static files, and `/mcp` | Ads conversion worker when enabled | DB init, provider-tool backfill, single-user bootstrap, HTTP client, MCP lifespan |
+| `all` | The complete surface, including `/run`, static files, `/mcp`, `/mcp/v2`, `/call/{rest:path}`, and `/catalog/call/{rest:path}` | Ads conversion worker when enabled | DB init, provider-tool backfill, single-user bootstrap, HTTP client, both MCP lifespans |
+| `dataplane` | `/call/{rest:path}` and internal `/catalog/call/{rest:path}` only; no `/run`, static files, docs, OpenAPI, or MCP | None | DB init, provider-tool backfill, HTTP client |
+| `control` | Everything except the two call routes; includes `/run`, static files, `/mcp`, and `/mcp/v2` | Ads conversion worker when enabled | DB init, provider-tool backfill, single-user bootstrap, HTTP client, both MCP lifespans |
 
 `_CONTROL_ROUTE_KEYS` and `_DATAPLANE_ROUTE_KEYS` assign every `api.router` route to exactly one
 owner. App creation fails on an unclassified, stale, duplicate, or multiply-owned key, so adding a
 route cannot silently expand the dataplane. Role separation is preparatory in stage 1; only the
 `all` role is deployed.
+
+`/mcp/v2` is mounted before `/mcp`; otherwise the parent Starlette mount consumes the nested path.
+`all_mcp_lifespans()` nests both transport lifespan contexts because mounted ASGI application
+lifespans are not started automatically.
 
 ## Route cloning
 

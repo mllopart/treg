@@ -15,6 +15,7 @@ from treg.bootstrap import create_app
 
 _SNAPSHOT = Path(__file__).parent / "snapshots" / "routes.json"
 _CALL_ROUTE = "DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT /call/{rest:path}"
+_CATALOG_CALL_ROUTE = "DELETE,GET,HEAD,OPTIONS,PATCH,POST,PUT /catalog/call/{rest:path}"
 
 
 def _all_routes() -> list[str]:
@@ -31,8 +32,9 @@ def _all_routes() -> list[str]:
 _ALL_ROUTES = _all_routes()
 _EXPECTED_ROUTES = {
     "all": _ALL_ROUTES,
-    "dataplane": [_CALL_ROUTE],
-    "control": [route for route in _ALL_ROUTES if route != _CALL_ROUTE],
+    "dataplane": [_CALL_ROUTE, _CATALOG_CALL_ROUTE],
+    "control": [route for route in _ALL_ROUTES
+                if route not in {_CALL_ROUTE, _CATALOG_CALL_ROUTE}],
 }
 _EXPECTED_BACKGROUND_TASKS = {
     "all": ["treg.adsconv.worker"],
