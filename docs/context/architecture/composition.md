@@ -20,8 +20,9 @@ the Catalog, web, and admin modules define concern-specific `APIRouter` blocks t
 at their legacy registration points. It then calls the factory once at EOF so the deployed and
 documented `treg.api:app` import path remains the default `all` role.
 
-The factory owns concrete assembly: the three pure-ASGI middleware registrations, five exception handlers,
-static mounts, optional MCP mounts and lifespans, GET-to-HEAD widening, the OpenAPI wrapper that hides
+The factory owns concrete assembly: the three core pure-ASGI middleware registrations, the conditional
+V2 path normalizer, five exception handlers, static mounts, optional MCP mounts and lifespans,
+GET-to-HEAD widening, the OpenAPI wrapper that hides
 implied HEAD operations, shared HTTP client creation, startup work, shutdown drains, and the Ads
 conversion worker. Registration order is compatibility behavior. The four stage-0 snapshots stay
 byte-identical for `role="all"` unless that composition intentionally changes.
@@ -33,6 +34,10 @@ either sends the same 301/302 response as before or calls its child directly. Ke
 `BaseHTTPMiddleware.call_next()` out of this stack matters for streaming and disconnects: an MCP
 client may close while its stateless transport terminates without sending a response, which is a
 normal end to an already-dead connection rather than a server 500.
+
+When the Claude connector is enabled, `NormalizeDirectoryMCPPath` is the outermost middleware. It
+rewrites the exact no-slash path `/mcp/v2` to `/mcp/v2/` before route matching. This prevents an MCP
+client that removes the trailing slash from falling through to the legacy `/mcp` mount.
 
 Pure ASGI does not make a genuine missing-response defect silent. Uvicorn's
 `RequestResponseCycle.run_asgi` checks an app that returns while the connection is still live, logs
@@ -61,7 +66,8 @@ route cannot silently expand the dataplane. Role separation is preparatory in st
 `all` role is deployed.
 
 When `TREG_CLAUDE_CONNECTOR_ENABLED=true`, `/mcp/v2` is mounted before `/mcp`; otherwise the parent
-Starlette mount consumes the nested path. `all_mcp_lifespans()` nests both transport lifespan
+Starlette mount consumes the nested path. The path normalizer makes `/mcp/v2` and `/mcp/v2/` the same
+V2 resource. `all_mcp_lifespans()` nests both transport lifespan
 contexts because mounted ASGI application lifespans are not started automatically.
 
 When the flag is false or missing, only `/mcp` is mounted and only its lifespan starts. The legacy

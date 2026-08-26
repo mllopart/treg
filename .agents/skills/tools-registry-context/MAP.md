@@ -33,6 +33,7 @@ Regenerate via `scripts/build-map.py`.
 | `scripts/build_plugin.py` | interface/skill.md |
 | `scripts/catalog_drift.py` | architecture/catalog.md |
 | `scripts/catalog_validate.py` | architecture/catalog.md |
+| `scripts/dev-local.sh` | ops/deploy.md |
 | `scripts/dump_surface.py` | architecture/composition.md |
 | `scripts/minimax_plugin.py` | interface/skill.md |
 | `src/treg/__main__.py` | ops/deploy.md |
@@ -171,5 +172,5 @@ Regenerate via `scripts/build-map.py`.
 | `interface/seo.md` | `api.py`, `web.py`, `agent_pages.py`, `robots.txt`, `catalog.css`, `index.html`, `landing.html`, `support.html`, `og-card.html` |
 | `interface/shell.md` | `shell.py`, `cli.py` |
 | `interface/skill.md` | `skill.md`, `mcp_install.py`, `build_plugin.py`, `plugin.json`, `marketplace.json`, `plugin.json`, `plugin.json`, `package.json`, `cordis.patch.yml`, `index.js`, `plugin.json`, `minimax_plugin.py` |
-| `ops/deploy.md` | `pyproject.toml`, `__main__.py`, `selfhost.sh`, `config.py`, `db.py`, `email.py`, `audit.py`, `render.yaml` |
+| `ops/deploy.md` | `pyproject.toml`, `__main__.py`, `selfhost.sh`, `config.py`, `db.py`, `email.py`, `audit.py`, `dev-local.sh`, `render.yaml` |
 | `reference/glossary.md` | `2026-06-30-jason-tools-registry.md` |

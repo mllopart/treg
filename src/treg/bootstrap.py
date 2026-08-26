@@ -457,6 +457,9 @@ def create_app(role: AppRole = "all") -> FastAPI:
 
     if role != "dataplane" and _mcp is not None:
         if get_settings().claude_connector_enabled:
+            # Claude removes the trailing slash from a custom-connector URL. Normalize before
+            # Starlette route matching so the exact path cannot fall through to the parent V1 mount.
+            app.add_middleware(_mcp.NormalizeDirectoryMCPPath)
             # The nested mount must be registered first or Starlette's /mcp parent consumes it.
             app.mount("/mcp/v2", _mcp.directory_mcp_app)
         app.mount("/mcp", _mcp.mcp_app)
