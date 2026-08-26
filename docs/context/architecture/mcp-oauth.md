@@ -25,6 +25,22 @@ enforcement rules:
 - `/mcp/v2/` is the additive catalog-only surface submitted to Claude's Connectors Directory. It
   cannot list or invoke arbitrary team-owned tools, even when one has the same name as a catalog id.
 
+## Claude connector feature flag
+
+`TREG_CLAUDE_CONNECTOR_ENABLED` controls the complete `/mcp/v2/` surface. The default value is
+`false`.
+
+When the flag is false:
+
+- `/mcp/v2/` is not mounted.
+- The V2 MCP lifespan does not start.
+- V2 OAuth metadata returns 404.
+- New V2 OAuth grants are refused.
+- The internal catalog-only call route returns 404.
+- The legacy `/mcp/` surface continues to work.
+
+Set the flag to `true` only for a controlled test or release.
+
 ## Legacy `/mcp/`: six tools, unchanged
 
 | Tool | Job |

@@ -60,9 +60,12 @@ owner. App creation fails on an unclassified, stale, duplicate, or multiply-owne
 route cannot silently expand the dataplane. Role separation is preparatory in stage 1; only the
 `all` role is deployed.
 
-`/mcp/v2` is mounted before `/mcp`; otherwise the parent Starlette mount consumes the nested path.
-`all_mcp_lifespans()` nests both transport lifespan contexts because mounted ASGI application
-lifespans are not started automatically.
+When `TREG_CLAUDE_CONNECTOR_ENABLED=true`, `/mcp/v2` is mounted before `/mcp`; otherwise the parent
+Starlette mount consumes the nested path. `all_mcp_lifespans()` nests both transport lifespan
+contexts because mounted ASGI application lifespans are not started automatically.
+
+When the flag is false or missing, only `/mcp` is mounted and only its lifespan starts. The legacy
+MCP surface does not depend on this flag.
 
 ## Route cloning
 

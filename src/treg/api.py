@@ -1650,7 +1650,10 @@ def _wrong_resource(resource: str) -> str | None:
     canonical = mcp_oauth.mcp_resource_url()
     # Each reviewed MCP surface is a distinct OAuth resource. Host aliases and slash spellings are
     # accepted within a version, but v1 and v2 never normalize into one another.
-    if mcp_oauth.mcp_resource_version(resource) is not None:
+    version = mcp_oauth.mcp_resource_version(resource)
+    if version == "v2" and not get_settings().claude_connector_enabled:
+        return "the Claude catalog connector is not enabled on this deployment"
+    if version is not None:
         return None
     return (f"this server issues tokens for {canonical} or {mcp_oauth.mcp_resource_url('v2')} only "
             "— use the `resource` value from "
@@ -2032,6 +2035,8 @@ async def oauth_protected_resource_v2():
     """Protected-resource metadata for the catalog-only directory connector."""
     from . import mcp_oauth
 
+    if not get_settings().claude_connector_enabled:
+        raise HTTPException(status_code=404, detail="Claude catalog connector is not enabled")
     return JSONResponse(mcp_oauth.protected_resource_metadata("v2"),
                         headers={"Cache-Control": "public, max-age=3600"})
 
@@ -9408,6 +9413,8 @@ async def call_catalog_endpoint(
     implementation as /call so credential injection, ACLs, deny rules, caps, metering, audit,
     idempotency and faithful relay remain single-sourced.
     """
+    if not get_settings().claude_connector_enabled:
+        raise HTTPException(status_code=404, detail="Claude catalog connector is not enabled")
     request.state.catalog_only = True
     return await call_tool(rest, request, caller, db)
 
