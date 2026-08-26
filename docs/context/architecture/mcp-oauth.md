@@ -287,6 +287,12 @@ A test asserts that calling without it raises rather than defaulting to permissi
 that is valid, well-formed and silently useless — the failure then surfaces at the first tool call as
 "not signed in", pointing the reader at authentication when the problem was the audience.
 
+V2 advertises the `treg:directory` scope as a fallback resource marker. A hosted Claude flow was
+observed preserving the V2 challenge scopes while omitting the RFC 8707 `resource` parameter. In
+that case, `_effective_mcp_resource` uses the marker to select the V2 audience. The marker grants no
+additional permission. An explicit resource remains authoritative, and a request without the marker
+keeps the existing V1 default.
+
 **Each MCP version has its own audience set.** V1 metadata is served at the root and
 `/.well-known/oauth-protected-resource/mcp`; v2 metadata is served at
 `/.well-known/oauth-protected-resource/mcp/v2` and names `/mcp/v2/` exactly. A v2 token fails on

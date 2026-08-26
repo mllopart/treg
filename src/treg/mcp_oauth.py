@@ -36,6 +36,22 @@ from .config import PUBLIC_HOST_ALIASES, get_settings
 # access token is only as dangerous as its remaining life.
 ACCESS_TTL_SECONDS = 3600
 
+# Claude's hosted connector has been observed omitting RFC 8707 `resource` even though its current
+# documentation says it sends it. The V2-only scope is therefore also a resource selector when the
+# parameter is absent. It grants no extra API permission; the V2 server remains catalog-only.
+DIRECTORY_SCOPE = "treg:directory"
+BASE_SCOPES = ["treg:catalog", "treg:call", "treg:read"]
+
+
+def scopes_for_resource(version: str = "v1") -> list[str]:
+    """Scopes advertised for one MCP resource; V2 carries a stable fallback identity marker."""
+    if version == "v1":
+        return [*BASE_SCOPES]
+    if version == "v2":
+        return [*BASE_SCOPES, DIRECTORY_SCOPE]
+    raise ValueError(f"unknown MCP resource version {version!r}")
+
+
 # Marks a token as an MCP access token and nothing else. treg already mints session cookies and
 # identity tokens with the same HMAC construction, so without a type marker a session cookie would
 # validate here (and vice versa) — one class of token would silently become another, which is a
@@ -126,7 +142,7 @@ def protected_resource_metadata(version: str = "v1") -> dict:
     return {
         "resource": mcp_resource_url(version),
         "authorization_servers": [base],
-        "scopes_supported": ["treg:catalog", "treg:call", "treg:read"],
+        "scopes_supported": scopes_for_resource(version),
         "bearer_methods_supported": ["header"],
         "resource_documentation": f"{base}/llms.txt",
     }
@@ -150,7 +166,7 @@ def authorization_server_metadata() -> dict:
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
-        "scopes_supported": ["treg:catalog", "treg:call", "treg:read"],
+        "scopes_supported": scopes_for_resource("v2"),
         # ChatGPT sends an HTTPS metadata URL as its client_id instead of registering. Advertising
         # this does not replace `registration_endpoint` above — Claude Code and most other clients
         # register dynamically, and supporting only one of the two would lock the others out.

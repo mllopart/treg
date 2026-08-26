@@ -1660,6 +1660,22 @@ def _wrong_resource(resource: str) -> str | None:
             f"/.well-known/oauth-protected-resource")
 
 
+def _effective_mcp_resource(resource: str, scope: str) -> str:
+    """Select the OAuth resource, with a V2-only scope fallback for Claude's hosted flow.
+
+    An explicit RFC 8707 resource always wins. When it is absent, the directory-only scope that V2
+    advertises and challenges with identifies V2. V1 keeps its historical default for every other
+    scope set, so the fallback cannot make existing connectors cross MCP versions.
+    """
+    from . import mcp_oauth
+
+    if resource:
+        return mcp_oauth.normalize_resource(resource)
+    requested_scopes = set((scope or "").split())
+    version = "v2" if mcp_oauth.DIRECTORY_SCOPE in requested_scopes else "v1"
+    return mcp_oauth.mcp_resource_url(version)
+
+
 def _same_mcp_resource(a: str, b: str) -> bool:
     """Whether two `resource` values name this same MCP server. Exact match, slash-variant match,
     or BOTH normalize into the canonical+legacy audience set — the domain move renamed the
@@ -1742,7 +1758,8 @@ async def oauth_authorize(
     if not code_challenge or code_challenge_method != "S256":
         return _oauth_error(redirect_uri, state, "invalid_request",
                             "PKCE with code_challenge_method=S256 is required")
-    if (bad_target := _wrong_resource(resource)) is not None:
+    effective_resource = _effective_mcp_resource(resource, scope)
+    if (bad_target := _wrong_resource(effective_resource)) is not None:
         return _oauth_error(redirect_uri, state, "invalid_target", bad_target)
 
     user = await _user_from_session(treg_session, db)
@@ -1827,7 +1844,8 @@ async def oauth_authorize_approve(
     if decision != "allow":
         # Cancel is a real answer and the client is entitled to hear it, rather than hang.
         return _oauth_error(redirect_uri, state, "access_denied", "the user declined")
-    if (bad_target := _wrong_resource(resource)) is not None:
+    effective_resource = _effective_mcp_resource(resource, scope)
+    if (bad_target := _wrong_resource(effective_resource)) is not None:
         return _oauth_error(redirect_uri, state, "invalid_target", bad_target)
     if not code_challenge or code_challenge_method != "S256":
         return _oauth_error(redirect_uri, state, "invalid_request",
@@ -1847,7 +1865,7 @@ async def oauth_authorize_approve(
     code = OAuthCode(
         code=_s.token_urlsafe(32), client_id=client.client_id, user_id=user.id, org_id=org_id,
         redirect_uri=redirect_uri, code_challenge=code_challenge,
-        resource=mcp_oauth.normalize_resource(resource) if resource else mcp_oauth.mcp_resource_url(),
+        resource=effective_resource,
         scope=scope,
         expires_at=datetime.now(timezone.utc).replace(tzinfo=None)
         + timedelta(seconds=AUTH_CODE_TTL_S))
