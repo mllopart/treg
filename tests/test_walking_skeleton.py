@@ -115,17 +115,13 @@ async def test_meta_reports_the_released_version(clients: AsyncClient):
 def test_the_pool_cannot_outnumber_postgres_during_a_deploy():
     """A rolling deploy runs TWO instances against one database. At 20+40 each, that was 120
     potential connections against a basic-plan ceiling of ~100 — a deploy could starve Postgres with
-    no bug anywhere, which is exactly what happened on 2026-08-15. Two instances of the current
-    numbers must stay comfortably under a 97-connection ceiling."""
-    import re
-    from pathlib import Path
+    no bug anywhere, which is exactly what happened on 2026-08-15. Sizing is now env-tunable
+    (TREG_DB_POOL_SIZE / TREG_DB_MAX_OVERFLOW), so this pins the SHIPPED defaults: two instances of
+    them must stay comfortably under a 97-connection ceiling."""
+    from treg.config import Settings
 
-    import treg.db as db
-
-    src = Path(db.__file__).read_text()
-    m = re.search(r"pool_size=(\d+), max_overflow=(\d+)", src)
-    assert m, "expected explicit pool bounds for the postgres path"
-    per_instance = int(m.group(1)) + int(m.group(2))
+    fields = Settings.model_fields
+    per_instance = fields["db_pool_size"].default + fields["db_max_overflow"].default
     assert per_instance * 2 <= 90, (
         f"two deploy-time instances could hold {per_instance * 2} connections — "
         "that is how the 2026-08-15 outage started")

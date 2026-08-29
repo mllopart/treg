@@ -12,6 +12,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, request_response
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import DisconnectionError, InterfaceError, OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.routing import BaseRoute, Mount
@@ -494,6 +495,14 @@ def create_app(role: AppRole = "all") -> FastAPI:
     app.add_exception_handler(OverflowError, api_module._id_out_of_range)
     bootstrap_handlers._stamp_call_exit = call_routes._stamp_call_exit
     app.add_exception_handler(PoolTimeoutError, bootstrap_handlers._pool_saturated)
+    # The database being unreachable shares the saturated contract (reason: db_unavailable). The
+    # builtin ConnectionRefusedError is MANDATORY: on this stack (sqlalchemy 2.0.51 + asyncpg
+    # 0.31.0) a Postgres TCP refusal escapes RAW - the asyncpg dialect translates no OSError - so
+    # the SQLAlchemy classes alone miss the actual outage failure (2026-08-29). No collision with
+    # upstream provider failures: httpx connect errors are absorbed in application/call/service.py,
+    # and httpx exceptions do not subclass the builtin ConnectionError.
+    for db_down in (OperationalError, InterfaceError, DisconnectionError, ConnectionRefusedError):
+        app.add_exception_handler(db_down, bootstrap_handlers._db_unavailable)
     app.add_exception_handler(StarletteHTTPException, bootstrap_handlers._mark_treg_own_errors)
 
     _include_role_routes(app, api_module, role)

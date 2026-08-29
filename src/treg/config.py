@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     # SQLite locally, Postgres on Render — same code path, just swap the URL.
     database_url: str = "sqlite+aiosqlite:///./treg.db"
 
+    # Postgres pool sizing, per process (TREG_DB_POOL_SIZE / TREG_DB_MAX_OVERFLOW; ignored on
+    # SQLite). The defaults size the WEB service; the capacity-sweep cron pins 1+0 in render.yaml.
+    # 8 slots bound concurrent DB PHASES, which are millisecond-scale (a /call/ holds no pooled
+    # connection during its upstream round trip) - the binding constraint on the basic-256mb
+    # Postgres is its 256MB of memory, not the nominal connection ceiling. Sustained saturation
+    # surfaces as the typed 503, not silence. Sizing arithmetic in db.py.
+    db_pool_size: int = 5
+    db_max_overflow: int = 3
+
     @field_validator("database_url")
     @classmethod
     def _async_pg_driver(cls, v: str) -> str:

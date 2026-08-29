@@ -33,7 +33,8 @@ attaches concern routers at compatibility-sensitive registration points, and cal
 EOF so the deployed `treg.api:app` import path remains the default `all` role.
 
 The factory owns concrete assembly: the three core pure-ASGI middleware registrations, the optional
-V2 path normalizer, five exception handlers, static mounts, optional MCP mounts and lifespans,
+V2 path normalizer, nine exception handlers (four of them one DB-unavailable adapter registered per
+class), static mounts, optional MCP mounts and lifespans,
 GET-to-HEAD widening, the OpenAPI wrapper that hides
 implied HEAD operations, shared HTTP client creation, startup work, shutdown drains, and the Ads
 conversion worker. Registration order is compatibility behavior. The four stage-0 snapshots stay
@@ -49,7 +50,9 @@ than appearing in the role's always-running background-task manifest. The lifesp
 shutdown first unbinds it from MCP, then calls `aclose()`, which refuses new refreshes and cancels the
 shared Task before database and HTTP resources disappear.
 
-`bootstrap_handlers.py` owns the app-wide pool-saturation and HTTP-exception adapters. The composition
+`bootstrap_handlers.py` owns the app-wide pool-saturation, DB-unavailable and HTTP-exception
+adapters (the DB-unavailable one answers the same typed 503 with `"reason": "db_unavailable"`;
+detail in [deploy](../ops/deploy.md) and [api](../interface/api.md)). The composition
 root supplies the call-specific `_stamp_call_exit` callback from `routers/call.py` before registration;
 the callback owns call ids, refusal classification, audit fallback, and idempotency-label release.
 

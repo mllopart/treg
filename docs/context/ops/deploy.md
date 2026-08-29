@@ -35,19 +35,36 @@ keygen` prints a Fernet key for `TREG_SECRET_KEY`. `treg.api:app` is
   SQLite, `init_db` raises (an ephemeral key would make every stored secret undecryptable after a
   restart — silent total loss). On SQLite dev it only logs a warning.
 - **Postgres pool hygiene:** for non-SQLite URLs the async engine adds `pool_pre_ping=True`,
-  `pool_recycle=300`, sizing (`pool_size=5`, `max_overflow=10` — per instance; a rolling deploy runs two
-  against a basic-plan Postgres ceiling of ~100, the 2026-08-15 outage) and `pool_timeout=5`. A request
-  that gets no slot in 5 s is answered `503 {"treg_saturated": true}` with `Retry-After: 2` (api.py
-  `_pool_saturated`) instead of SQLAlchemy's default 30 s wait and an anonymous 500. 15 slots is plenty
-  because a `/call/` holds no connection during its upstream round trip — `call_tool` commits before
-  `relay()`; holding one there deadlocked 15 concurrent calls for 30 s on 2026-08-24 (see
+  `pool_recycle=300`, env-tunable sizing (`TREG_DB_POOL_SIZE` / `TREG_DB_MAX_OVERFLOW`, defaults 5+3)
+  and a hardcoded `pool_timeout=5` (it encodes the typed-503 contract, not capacity). The per-component
+  budget: web 8 (5+3) x 2 during a rolling deploy + the capacity-sweep cron at 1+0 (pinned in
+  render.yaml) = 17 worst case; alembic already runs on NullPool (alembic/env.py). The ceiling is ~100
+  nominal on current flexible plans (97 on legacy plans; Render reserves some connections), but on the
+  basic-256mb instance the 256MB of memory is the binding constraint in practice - DB phases are
+  millisecond-scale, so 8 slots per web process absorb any realistic burst (the 2026-08-15 outage was
+  20+40 x 2 starving the whole database). A request that gets no slot in 5 s is answered
+  `503 {"treg_saturated": true}` with `Retry-After: 2` (bootstrap_handlers `_pool_saturated`) instead of
+  SQLAlchemy's default 30 s wait and an anonymous 500. The slots are plenty because a `/call/` holds no
+  connection during its upstream round trip - `call_tool` commits before `relay()`; holding one there
+  deadlocked 15 concurrent calls for 30 s on 2026-08-24 (see
   [proxy-model](../architecture/proxy-model.md) § Connection discipline).
+- **Database unreachable → the same typed 503:** when Postgres itself is down (TCP refusal, or an
+  established connection dies), `_db_unavailable` answers the SAME `503 {"treg_saturated": true}`
+  contract with `"reason": "db_unavailable"` added, so existing client retry branches fire and
+  incidents are greppable in Render logs (logger `treg`, one warning line per hit). It is registered
+  for the SQLAlchemy classes AND the raw builtin `ConnectionRefusedError` - on sqlalchemy 2.0.51 +
+  asyncpg 0.31.0 a Postgres TCP refusal escapes untranslated (the 2026-08-29 outage surfaced as
+  anonymous 500s). Statement-level OperationalErrors (deadlock, lock/statement timeout) re-raise and
+  keep their 500: only `connection_invalidated` or an `OSError` `orig` counts as the DB being down.
 
 ## Config (`config.py`)
 `Settings` (pydantic-settings, env prefix `TREG_`, reads `.env`), cached via `get_settings()`:
 - `database_url` — default `sqlite+aiosqlite:///./treg.db` (SQLite dev, Postgres on Render, same code).
   A `field_validator` rewrites a bare `postgres://` / `postgresql://` URL → `postgresql+asyncpg://`, so
   Render's `fromDatabase`-injected URL works unedited (the async engine needs the asyncpg driver).
+- `db_pool_size` / `db_max_overflow` - per-process Postgres pool sizing (defaults 5+3, ignored on
+  SQLite). The knob that lets each service size its own pool: the web service keeps the defaults, the
+  capacity-sweep cron pins `TREG_DB_POOL_SIZE=1` / `TREG_DB_MAX_OVERFLOW=0` in render.yaml.
 - `secret_key` — the Fernet key; empty → an ephemeral key is minted at startup (secrets won't survive a
   restart). See [auth-secrets](../architecture/auth-secrets.md).
 - `public_url` — default `https://treg.to`; the reference deployment is cut over in STAGES —

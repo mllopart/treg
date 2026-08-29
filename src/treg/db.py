@@ -21,22 +21,30 @@ from .config import get_settings
 # On a real (non-SQLite) DB, add production pool hygiene: pre-ping to drop dead connections
 # (Postgres/PgBouncer close idle ones → otherwise a post-idle request 500s) and a recycle window,
 # sized against the relay's concurrency so bursts don't starve the pool + time out.
-_db_url = get_settings().database_url
+_settings = get_settings()
+_db_url = _settings.database_url
 _engine_kwargs: dict = {"future": True}
 if "sqlite" not in _db_url:
-    # 5+10, not the 20+40 this shipped with. The pool is PER INSTANCE, and a rolling deploy runs two
-    # instances against one Postgres — 60 each meant 120 potential connections against a basic-plan
-    # ceiling of ~100, so a deploy could starve the database with no bug anywhere. 15 is generous for
-    # an async app on this plan; saturation now surfaces as our own pool queueing (visible, bounded)
-    # rather than Postgres refusing connections for everyone (the 2026-08-15 outage).
+    # Sizing is env-tunable per service (TREG_DB_POOL_SIZE / TREG_DB_MAX_OVERFLOW, defaults 5+3 in
+    # config.py; the capacity-sweep cron pins 1+0 in render.yaml). History: this shipped at 20+40.
+    # The pool is PER INSTANCE, and a rolling deploy runs two instances against one Postgres - 60
+    # each meant 120 potential connections against a ~100 ceiling, so a deploy could starve the
+    # database with no bug anywhere (the 2026-08-15 outage); 5+10 fixed that. The current budget:
+    # web 8 (5+3) x 2 during a rolling deploy + cron 1 = 17 against the basic-256mb ceiling (~100
+    # nominal on current flexible plans - Render reserves some connections, and in practice the
+    # 256MB of RAM is the binding constraint, not the nominal count). Saturation surfaces as our
+    # own pool queueing (visible, bounded) rather than Postgres refusing connections for everyone.
     #
-    # `pool_timeout` 5 s, not SQLAlchemy's default 30: a request that cannot get a slot is treg
-    # saturated, and the caller should hear that fast and typed (api.py maps the TimeoutError to a
-    # `503 treg_saturated` with Retry-After) rather than sit 30 s and receive an anonymous 500. The
-    # slot count itself only bounds concurrent DB PHASES, which are milliseconds — a /call/ holds no
-    # connection during its upstream round trip (call_tool commits before relay()). Holding one
-    # there is what turned 15 concurrent calls into a 30 s deadlock on 2026-08-24.
-    _engine_kwargs.update(pool_pre_ping=True, pool_recycle=300, pool_size=5, max_overflow=10,
+    # `pool_timeout` stays HARDCODED at 5 s, not SQLAlchemy's default 30 - it encodes the typed-503
+    # contract, not capacity. A request that cannot get a slot is treg saturated, and the caller
+    # should hear that fast and typed (api.py maps the TimeoutError to a `503 treg_saturated` with
+    # Retry-After) rather than sit 30 s and receive an anonymous 500. The slot count itself only
+    # bounds concurrent DB PHASES, which are milliseconds - a /call/ holds no connection during its
+    # upstream round trip (call_tool commits before relay()). Holding one there is what turned 15
+    # concurrent calls into a 30 s deadlock on 2026-08-24.
+    _engine_kwargs.update(pool_pre_ping=True, pool_recycle=300,
+                          pool_size=_settings.db_pool_size,
+                          max_overflow=_settings.db_max_overflow,
                           pool_timeout=5)
 _engine = create_async_engine(_db_url, **_engine_kwargs)
 # Public: the audit writer opens its own session here (off the request path — rule #2).

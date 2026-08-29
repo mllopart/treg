@@ -19,6 +19,22 @@
     {
       "exception": "sqlalchemy.exc.TimeoutError",
       "handler": "treg.api._pool_saturated"
+    },
+    {
+      "exception": "sqlalchemy.exc.OperationalError",
+      "handler": "treg.api._db_unavailable"
+    },
+    {
+      "exception": "sqlalchemy.exc.InterfaceError",
+      "handler": "treg.api._db_unavailable"
+    },
+    {
+      "exception": "sqlalchemy.exc.DisconnectionError",
+      "handler": "treg.api._db_unavailable"
+    },
+    {
+      "exception": "builtins.ConnectionRefusedError",
+      "handler": "treg.api._db_unavailable"
     }
   ],
   "middleware": [

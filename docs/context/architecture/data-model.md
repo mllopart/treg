@@ -227,7 +227,9 @@ The API builds a single-binding tool from flat fields via `_flat_binding()`; inj
 [auth-secrets](auth-secrets.md).
 
 ## Async DB (`db.py`)
-One async SQLAlchemy engine (`_engine`, Postgres pool 5 + 10 overflow per instance, `pool_timeout=5`)
+One async SQLAlchemy engine (`_engine`, Postgres pool sized per process via `TREG_DB_POOL_SIZE` /
+`TREG_DB_MAX_OVERFLOW` — defaults 5 + 3 overflow, `pool_timeout=5` hardcoded; see
+[deploy](../ops/deploy.md))
 + a public `session_maker` (the audit writer opens its own session here; so do the post-relay
 bookkeeping steps of `/call/` — the request session is committed before the relay so none of them
 ever waits on it, see [proxy-model](proxy-model.md) § Connection discipline). `init_db()` creates tables **and runs the guarded orgs migration** (`_migrate_to_orgs` —

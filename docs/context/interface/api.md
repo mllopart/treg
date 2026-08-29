@@ -637,7 +637,14 @@ validated before resolving the shared HTTP client. `/auth/logout` remains an HTT
   (+ `ensure_fresh`) → **`db.commit()` — the DB phase ends here; a call in flight holds no pooled
   connection** → `relay()` → `audit.record_call`. A pool that has no slot within 5 s answers
   `503 {"treg_saturated": true}` + `Retry-After: 2` (`_pool_saturated`, the handler for
-  `sqlalchemy.exc.TimeoutError`) rather than a 30 s wait and an anonymous 500. A **platform binding** carries no `secret_id`
+  `sqlalchemy.exc.TimeoutError`) rather than a 30 s wait and an anonymous 500. The database being
+  UNREACHABLE shares that contract with `"reason": "db_unavailable"` added (`_db_unavailable`,
+  registered for `OperationalError`/`InterfaceError`/`DisconnectionError` AND the raw builtin
+  `ConnectionRefusedError` - on this stack a Postgres TCP refusal escapes asyncpg untranslated, the
+  2026-08-29 outage). DBAPIErrors count only when `connection_invalidated` or `orig` is an
+  `OSError`; a statement-level failure (deadlock, lock/statement timeout) re-raises and keeps its
+  500. Both 503 exits stamp `X-Treg-Call-Id`, the audit row and the idempotency release via
+  `_stamp_call_exit`, and both deliberately omit `X-Treg-Error` (the typed flag is the signal). A **platform binding** carries no `secret_id`
   (its value comes from settings at relay time), so secret-loading now skips `secret_id is None`. Detail
   in [proxy-model](../architecture/proxy-model.md).
   `call_catalog_endpoint` (`* /catalog/call/{rest:path}`, hidden from public OpenAPI) is the narrower

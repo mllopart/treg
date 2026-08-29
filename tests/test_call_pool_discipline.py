@@ -21,7 +21,7 @@ import os
 import time
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -38,6 +38,7 @@ from treg.models import CallRecord, Hold
 from test_marketplace_call import EP, EP_MICRO, platform_on  # noqa: F401 — fixture reuse
 from test_mcp import _call_tool, mcp_session
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 
@@ -136,6 +137,64 @@ async def test_a_saturated_pool_answers_a_typed_503_not_an_anonymous_500(
     assert r.status_code == 503, r.text
     assert r.json()["treg_saturated"] is True
     assert r.headers.get("Retry-After") == "2"
+
+
+async def test_a_refused_db_connection_answers_the_same_typed_503(
+    clients: AsyncClient, monkeypatch,
+):
+    """The 2026-08-29 outage: Postgres refusing the TCP connection surfaces from asyncpg as a RAW
+    builtins.ConnectionRefusedError (the dialect's error translation has no OSError entry), NOT an
+    OperationalError. Before the fix it matched no handler and escaped as an anonymous 500 with no
+    X-Treg-Call-Id, no audit row and a leaked idempotency claim."""
+    async def _db_down(*args, **kwargs):
+        raise ConnectionRefusedError(61, "Connection refused")
+
+    monkeypatch.setattr(call_service, "_resolve_call", _db_down)
+    r = await clients.get(f"/call/{EP}?aweme_id=7")
+    assert r.status_code == 503, r.text
+    body = r.json()
+    assert body["treg_saturated"] is True
+    assert body["reason"] == "db_unavailable"
+    assert r.headers.get("Retry-After") == "2"
+    assert r.headers.get("X-Treg-Call-Id"), "the exit must carry the id that joins the audit row"
+
+
+async def test_an_invalidated_connection_error_answers_the_same_typed_503(
+    clients: AsyncClient, monkeypatch,
+):
+    """A wrapped OperationalError whose connection died (connection_invalidated, or orig an OSError)
+    is the database being unreachable, not a statement bug - same 503 contract."""
+    async def _conn_dropped(*args, **kwargs):
+        raise OperationalError(
+            "SELECT 1", None, OSError(61, "Connection refused"), connection_invalidated=True)
+
+    monkeypatch.setattr(call_service, "_resolve_call", _conn_dropped)
+    r = await clients.get(f"/call/{EP}?aweme_id=7")
+    assert r.status_code == 503, r.text
+    body = r.json()
+    assert body["treg_saturated"] is True
+    assert body["reason"] == "db_unavailable"
+    assert r.headers.get("Retry-After") == "2"
+    assert r.headers.get("X-Treg-Call-Id")
+
+
+async def test_a_statement_level_operational_error_keeps_its_500(
+    clients: AsyncClient, monkeypatch,
+):
+    """A deadlock or lock/statement timeout (orig is an asyncpg Postgres error, not an OSError, and
+    the connection is still good) is a bug to surface, not the DB being down - it must NOT be
+    converted into a retryable 503."""
+    async def _deadlock(*args, **kwargs):
+        raise OperationalError("UPDATE hold SET ...", None, Exception("deadlock detected"))
+
+    monkeypatch.setattr(call_service, "_resolve_call", _deadlock)
+    # raise_app_exceptions=False so ServerErrorMiddleware's plain 500 is observable as a response.
+    transport = ASGITransport(app=A.app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://registry",
+                           headers={"X-Treg-Token": clients.headers["X-Treg-Token"]}) as c:
+        r = await c.get(f"/call/{EP}?aweme_id=7")
+    assert r.status_code == 500, r.text
+    assert "treg_saturated" not in r.text
 
 
 @pytest.mark.skipif(

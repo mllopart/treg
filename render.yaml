@@ -179,6 +179,14 @@ services:
           type: web
           name: treg
           envVarName: TREG_SECRET_KEY
+      # The sweep never holds more than one DB connection at a time: init_db's connection returns
+      # to the pool before the single session opens, the collector fan-out is HTTP-only, and every
+      # write is sequential on that one session. 1+0 gives Postgres' 256MB back to the web service,
+      # and any future accidental parallelization surfaces immediately via the 5s pool timeout.
+      - key: TREG_DB_POOL_SIZE
+        value: "1"
+      - key: TREG_DB_MAX_OVERFLOW
+        value: "0"
       - key: TREG_OVERFLOW_KEY_ORTHOGONAL
         fromService:
           type: web
