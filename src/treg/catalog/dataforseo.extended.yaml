@@ -4009,9 +4009,7 @@ endpoints:
   expect:
     json_path: tasks.0.status_code
     equals: 20000
-  verified: '2026-07-28'
-  example_response: examples/dataforseo.x.ai-optimization-claude-llm-responses-live.json
-  observed_cost: 0
+  unverified: previous verifier request returned tasks.0.status_code 40501; corrected verifier request awaits replay
   capability: ai-search.claude.answer
 - id: dataforseo.x.ai-optimization-gemini-llm-responses-live
   tier: extended
@@ -10108,9 +10106,7 @@ endpoints:
   expect:
     json_path: tasks.0.status_code
     equals: 20000
-  verified: '2026-07-28'
-  example_response: examples/dataforseo.x.backlinks-bulk-new-lost-backlinks-live.json
-  observed_cost: 0
+  unverified: previous verifier request returned tasks.0.status_code 40501; corrected verifier request awaits replay
 - id: dataforseo.x.backlinks-bulk-new-lost-referring-domains-live
   tier: extended
   platform: web
@@ -10164,9 +10160,7 @@ endpoints:
   expect:
     json_path: tasks.0.status_code
     equals: 20000
-  verified: '2026-07-28'
-  example_response: examples/dataforseo.x.backlinks-bulk-new-lost-referring-domains-live.json
-  observed_cost: 0
+  unverified: previous verifier request returned tasks.0.status_code 40501; corrected verifier request awaits replay
 - id: dataforseo.x.backlinks-bulk-pages-summary-live
   tier: extended
   platform: web
@@ -12556,9 +12550,7 @@ endpoints:
   expect:
     json_path: tasks.0.status_code
     equals: 20000
-  verified: '2026-07-28'
-  example_response: examples/dataforseo.x.on-page-content-parsing.json
-  observed_cost: 0
+  unverified: previous verifier request returned tasks.0.status_code 40403; corrected verifier request awaits replay
 - id: dataforseo.x.on-page-content-parsing-live
   tier: extended
   platform: web
