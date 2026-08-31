@@ -11,9 +11,38 @@ This file orients an AI agent (Claude Code, Codex, Cursor, …) working in this 
   the core mechanic is a proxy that injects credentials server-side so a consumer never holds the secret.
   See `README.md`.
 
+## Architecture
+
+The server under `src/treg/` is a four-layer modular monolith (one process, one package; code
+boundaries, not services):
+
+- **`routers/`** — thin HTTP/MCP translation only: no business rules, no query orchestration, no
+  money logic.
+- **`application/`** — use-case sequencing, transaction boundaries, and compensation (`call/`,
+  `signup`, `connect`, `billing`, `onboard/`). The use case opens the DB session and is the **only**
+  place that commits; domain functions never commit or roll back.
+- **`domain/`** — business rules testable alone: `identity`, `governance`, `connections`, `tools`,
+  `catalog`, `capacity`, `money`, `referrals`. Domains do not import each other except three
+  enumerated edges (`governance → identity`, `tools → connections`, `capacity → catalog` read-only);
+  import-linter contracts in `pyproject.toml` enforce the matrix.
+- **`infra/`** — external systems: `db`, `upstream` (faithful relay, credential injection, SSRF
+  guard), `stripe`, plus crypto/ratestore/email adapters.
+
+`bootstrap.py` is the composition root: `create_app(role="all" | "dataplane" | "control")` fixes each
+role's routes, background tasks, and startup checks (snapshot-tested). `api.py` is a shrinking legacy
+route-splicing surface, **not** the brain — new logic goes in application or domain, never in
+`api.py`, `cli.py`, or the web layer.
+
+Two hard rules on the call path: a hold is settled or released **exactly once** on every path, and
+**zero DB connections** are held while an upstream request is in flight. Balances change only through
+`domain/money`'s five entries (grant · topup · reserve · settle · release), in integer micro-USD.
+Dataplane writes are limited to an enumerated allowlist — see `docs/context/architecture/`
+(`composition.md`, `import-boundaries.md`, `money.md`).
+
 ## Working agreement
 
-- Run `uv run pytest -q` before and after changes; keep it green (add tests for new behavior).
+- Run `uv run --frozen pytest -q` before and after changes; keep it green (add tests for new
+  behavior). Always `--frozen`: an older `uv` rewrites `uv.lock` into a huge no-op diff.
 - Keep changes minimal and scoped; match the surrounding style.
 - When you change a subsystem, update its `docs/context/` fragment in the same change.
 - When `/mcp/`, `/mcp/v2/`, or shared MCP code changes, review both MCP surfaces. Preserve the
@@ -45,10 +74,11 @@ on-page) with a sandboxed CLI via `scripts/dev-local.sh cli <args>`.
 
 ## Things every agent should know before editing
 
-- The API (`src/treg/api.py`) is the only brain — the CLI and the dashboard are thin clients over it.
-  Put logic in the API, not in `cli.py` or the web layer.
+- The server is the only brain — the CLI and the dashboard are thin clients over it. Put logic in
+  application or domain modules (see Architecture above), not in `cli.py` or the web layer.
 - The dashboard (`src/treg/web/index.html`) is a single-file Vue app with **no build step** — edit the
   HTML directly; there is nothing to compile.
-- Migrations run on every startup and must stay idempotent **and** portable across SQLite + Postgres
-  (see `docs/context/ops/deploy.md` for the SQL rules).
+- Schema changes are Alembic revisions in `src/treg/alembic/versions/`, portable across SQLite +
+  Postgres. Startup only **verifies** the schema read-only and never writes; migrations run through
+  `maintenance.py` / the release pipeline (see `docs/context/ops/deploy.md`).
 - One fetch teaches you the product itself: `src/treg/web/llms.txt` (served at `/llms.txt`).
