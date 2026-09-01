@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote, urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,7 @@ from ...domain.capacity.view import view as capacity_view
 from ...domain.catalog import store as catalog_store
 from ...domain.governance import access as access_policy
 from ...domain.identity.access import Caller
+from ...domain.money import settlement as settlement_basis
 from ...infra.db import session_maker
 from ...models import CapabilityPin, Org, Secret, Tool
 from ..connect import _host_of, _provider_bindings
@@ -279,6 +280,9 @@ class MarketplaceCall:
     # treg's own account is marked exhausted AND an overflow route is enabled: skip the direct
     # attempt (no hold, no vendor 402) and go straight to the child cycle (plan §4 ladder).
     skip_direct: bool = False
+    settlement_basis: dict = field(default_factory=dict)
+    request_data: dict = field(default_factory=dict)
+    async_descriptor: dict | None = None
 
     @property
     def metered(self) -> bool:
@@ -588,6 +592,12 @@ async def _billed_marketplace(
         ep = catalog_store.load().by_id.get(mk.endpoint_id)
     est, ctype, unit = _oauth_billed_estimate(provider, ep, method, query, body)
     mk.billed_oauth, mk.estimate_micro, mk.cost_type, mk.unit_micro = True, est, ctype, unit
+    # OAuth-app billing can override a catalog estimate (notably X writes containing a URL), so its
+    # response-time basis must be rebuilt from the authoritative billed-app estimate.
+    mk.settlement_basis = {
+        "when": "response", "amount": {"kind": "observed"},
+        "fallback_micro": est, "reserve_micro": est,
+    }
     return mk
 
 
@@ -814,16 +824,30 @@ async def _resolve_marketplace_call(
     # The catalog's estimate travels on EVERY tier — informational on tiers 1/2 (the provider bills
     # the org's own account; Activity shows "estimated") and the reserve amount on tier 4 only
     # (`metered` gates the ledger, so this never charges a balance for an own-key call).
-    cv = catalog_store.load().cost_view(ep.get("cost"), service) if ep.get("cost") else None
+    cat = catalog_store.load()
+    raw_cost = ep.get("cost") or {}
+    cv = cat.cost_view(raw_cost, service) if raw_cost else None
     info_est, info_unit = _marketplace_pricing(
         service, ep["id"], cv, query, body)
+    request_data = settlement_basis.request_evidence(
+        query.multi_items(), body, path_names=consumed)
+    unit_view = cat.cost_view({**raw_cost, "value": 1, "per": 1}, service) if raw_cost else None
+    unit_micro = _usd_to_micro(unit_view.get("usd")) if unit_view else 0
+    basis = settlement_basis.derive_basis(
+        raw_cost, request=request_data, input_schema=ep.get("input") or {},
+        unit_micro=unit_micro, terminal=bool(ep.get("async")),
+        response_estimate_micro=info_est,
+    )
+    if basis.get("amount", {}).get("kind") in ("table", "usage"):
+        info_est = int(basis["reserve_micro"])
     common = dict(upstream=upstream, consumed=consumed, endpoint_id=ep["id"], provider=service,
                   params_hash=phash, cost_type=str((ep.get("cost") or {}).get("type") or ""),
                   estimate_micro=info_est,
                   # The per-ROW price, carried on every tier (settle only reads it on metered calls):
                   # a `per_result` settle that can't count rows can only ever bill the estimate,
                   # which is how 6,000 delivered Bright Data records once billed as one (2026-08-24).
-                  unit_micro=info_unit)
+                  unit_micro=info_unit, settlement_basis=basis, request_data=request_data,
+                  async_descriptor=ep.get("async"))
     try:  # tier 1 — the org registered this provider: their tool, their bindings, their ACLs
         target = await resolve_call(upstream, caller, db)
         return MarketplaceCall(

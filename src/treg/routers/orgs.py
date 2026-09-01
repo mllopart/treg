@@ -46,6 +46,7 @@ from ..infra.db import get_session
 from ..models import (
     ROLE_RANK,
     AdConversion,
+    AsyncTaskRecord,
     Bundle,
     CallRecord,
     CapabilityPin,
@@ -209,7 +210,7 @@ _ORG_SCOPED_MODELS = (
     CapabilityPin,
     TagBudget,
     TagSpend,  # before the money tables it attributes: its rows reference a Hold that is about to go
-    LedgerEntry, Hold, CreditBlock,
+    AsyncTaskRecord, LedgerEntry, Hold, CreditBlock,
     OAuthCode, OAuthRefresh,   # grants naming a team that no longer exists
     IdempotentCall,            # a remembered answer belongs to the team that paid for it
     ToolRequest,  # attribution rows go with the team; anonymous filings carry no org_id and stay

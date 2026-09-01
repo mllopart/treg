@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from .config import get_settings
-from .models import CallRecord, LedgerEntry
+from .models import AsyncTaskRecord, CallRecord, LedgerEntry
 
 # How far the observed cost may sit from the estimate before the endpoint is worth a human's
 # attention. 5% is under the platform margin, so a drift that trips this is still profitable — which
@@ -51,6 +51,46 @@ def window_start(days: int) -> datetime:
     """Naive-UTC cutoff `days` back — the convention every timestamp column in this app stores."""
     days = max(1, min(int(days), 365))
     return datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+
+
+async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
+    """Pending age, fallback reviews, and per-provider terminal settlement outcomes."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    rows = (await db.execute(select(AsyncTaskRecord))).scalars().all()
+    ages = {"under_5m": 0, "5m_to_1h": 0, "1h_to_6h": 0, "6h_to_24h": 0, "over_24h": 0}
+    fallback = []
+    providers: dict[str, dict] = {}
+    for row in rows:
+        if row.status == "pending":
+            seconds = max(0, (now - row.created_at).total_seconds())
+            bucket = ("under_5m" if seconds < 300 else "5m_to_1h" if seconds < 3600 else
+                      "1h_to_6h" if seconds < 21600 else "6h_to_24h" if seconds < 86400 else
+                      "over_24h")
+            ages[bucket] += 1
+        if row.status == "timed_out" and row.completed_at and row.completed_at >= since:
+            fallback.append({
+                "call_id": row.call_id, "org_id": row.org_id, "provider": row.provider,
+                "endpoint_id": row.endpoint_id, "reserved_micro": row.reserved_micro,
+                "settled_micro": row.settled_micro, "completed_at": row.completed_at.isoformat(),
+            })
+        if row.completed_at and row.completed_at >= since and row.status in ("settled", "released"):
+            item = providers.setdefault(row.provider, {
+                "provider": row.provider, "successes": 0, "failures": 0, "settled_micro": 0})
+            if row.status == "settled":
+                item["successes"] += 1
+                item["settled_micro"] += int(row.settled_micro or 0)
+            else:
+                item["failures"] += 1
+    output = []
+    for item in providers.values():
+        total = item["successes"] + item["failures"]
+        output.append({**item, "tasks": total,
+                       "success_rate": round(item["successes"] / total, 4) if total else None,
+                       "settled_usd": usd(item["settled_micro"])})
+    output.sort(key=lambda item: item["provider"])
+    fallback.sort(key=lambda item: item["completed_at"], reverse=True)
+    return {"pending": sum(ages.values()), "pending_age": ages,
+            "fallback_settlements": fallback, "providers": output}
 
 
 async def price_drift(

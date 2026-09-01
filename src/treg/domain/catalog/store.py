@@ -132,7 +132,11 @@ class Catalog:
         records `value: 2.0, per: 1000, unit: row` and prices out at $0.002 per row."""
         if not isinstance(cost, dict):
             return None
-        value, cur = cost.get("value"), cost.get("currency", "USD")
+        # A table's explicit fallback is its validated global upper bound.  It is therefore the
+        # one safe scalar to expose to eligibility and callers that cannot render the matrix.
+        fallback = cost.get("fallback") if isinstance(cost.get("fallback"), dict) else {}
+        value = cost.get("value", fallback.get("value"))
+        cur = cost.get("currency", "USD")
         per = cost.get("per") or 1
         if cur == "credit":
             rate = self.credit_rates.get(provider)

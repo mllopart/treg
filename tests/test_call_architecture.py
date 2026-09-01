@@ -180,6 +180,8 @@ def test_call_runtime_import_edges_point_inward() -> None:
     upstream_forbidden = call_forbidden
     assert _package_forbidden_imports(_SRC / "application" / "call", call_forbidden) == set()
     assert _package_forbidden_imports(_SRC / "infra" / "upstream", upstream_forbidden) == set()
+    async_forbidden = ("treg.api", "treg.routers", "treg.application", "treg.audit")
+    assert _package_forbidden_imports(_SRC / "domain" / "asynctasks", async_forbidden) == set()
 
 
 @pytest.mark.parametrize(
@@ -188,6 +190,7 @@ def test_call_runtime_import_edges_point_inward() -> None:
         ("application/call", ("treg.api",), "from treg.api import app\n"),
         ("application/call", ("fastapi",), "from fastapi import Request\n"),
         ("infra/upstream", ("treg.routers",), "from treg.routers import call\n"),
+        ("domain/asynctasks", ("treg.application",), "from treg.application import asynctasks\n"),
     ],
 )
 def test_import_edge_contracts_reject_mutations(package, forbidden, mutation) -> None:

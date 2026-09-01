@@ -18,6 +18,7 @@ sources:
   - src/treg/domain/tools/bindings.py
   - src/treg/domain/tools/bundles.py
   - tests/test_oauth_refresh.py
+  - src/treg/config.py
 related:
   - architecture/proxy-model.md
   - architecture/data-model.md
@@ -25,6 +26,10 @@ related:
 ---
 
 # Auth & secrets
+
+Tier 4 has explicit platform-key slots for MiniMax, OpenRouter and Replicate. The web and async cron
+receive them as environment secrets, and the worker constructs the same platform bindings as the call
+path. Key values are never copied into task records, logs or archive evidence.
 
 The hard part: match every credential shape a real skill uses, keep it encrypted, and keep OAuth tokens
 alive, without the proxy ever branching on shape.

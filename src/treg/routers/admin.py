@@ -331,6 +331,16 @@ async def admin_reconcile_repeats(
             **await reconcile.repeat_rate(db, since, top=top)}
 
 
+@app.get("/admin/reconcile/asynctasks")
+async def admin_reconcile_asynctasks(
+    since_days: int = 30, _: str = Depends(require_superadmin), db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Deferred holds, timeout fallbacks needing review, and provider task outcomes."""
+    since = reconcile.window_start(since_days)
+    return {"since": since.isoformat(), "since_days": since_days,
+            **await reconcile.async_task_settlement(db, since)}
+
+
 @app.get("/admin/archive")
 async def admin_archive(
     top: int = 50,

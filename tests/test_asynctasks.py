@@ -1,0 +1,248 @@
+"""Deferred settlement for asynchronous metered catalog calls."""
+
+from __future__ import annotations
+
+import json
+from datetime import timedelta
+
+import pytest
+from httpx import AsyncClient
+from sqlmodel import select
+
+from treg.application import asynctasks as task_app
+from treg.application.call import service as call_service
+from treg.application.call.types import UpstreamResponse
+from treg.config import get_settings
+from treg import reconcile
+from treg.domain import asynctasks
+from treg.domain import money as ledger
+from treg.domain.money import settlement
+from treg.infra.db import session_maker
+from treg.models import ArchiveKey, ArchiveSnapshot, AsyncTaskRecord, Hold, LedgerEntry
+from treg.timeutil import utcnow_naive
+
+
+EP = "replicate.image-gen.flux-schnell"
+
+
+def _response(status: int, document: dict) -> UpstreamResponse:
+    body = json.dumps(document).encode()
+
+    async def stream():
+        yield body
+
+    async def close():
+        return None
+
+    return UpstreamResponse(status, ((b"content-type", b"application/json"),), stream(), close)
+
+
+@pytest.fixture
+def replicate_platform(monkeypatch):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_REPLICATE", "test-platform-token")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "replicate")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+async def _submit(clients: AsyncClient, monkeypatch, document: dict):
+    async def fake_relay(*args, **kwargs):
+        return _response(201, document)
+
+    monkeypatch.setattr(call_service, "relay", fake_relay)
+    return await clients.post(f"/call/{EP}", json={"input": {
+        "prompt": "A red kite over a beach.", "num_outputs": 1,
+        "aspect_ratio": "1:1", "output_format": "webp",
+    }})
+
+
+async def test_settle_fork_keeps_hold_and_writes_pending_row(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    response = await _submit(clients, monkeypatch, {
+        "id": "prediction-1", "urls": {"get": "https://api.replicate.com/v1/predictions/1"}})
+    assert response.status_code == 201
+    assert response.headers["X-Treg-Cost-Micro"] == "3000"
+    call_id = response.headers["X-Treg-Call-Id"]
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        hold = await db.get(Hold, call_id)
+    assert row is not None and hold is not None
+    assert (row.task_id, row.poll_url, row.status) == (
+        "prediction-1", "https://api.replicate.com/v1/predictions/1", "pending")
+    assert row.settlement_basis["when"] == "terminal"
+
+
+async def test_extraction_failure_is_persisted_fail_closed(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    response = await _submit(clients, monkeypatch, {})
+    assert response.status_code == 201
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, response.headers["X-Treg-Call-Id"])
+        hold = await db.get(Hold, response.headers["X-Treg-Call-Id"])
+    assert row is not None and hold is not None
+    assert row.task_id is None and "extraction failed" in row.error
+    assert row.next_check_at - row.created_at == asynctasks.MAX_AGE
+
+
+async def test_pending_row_write_failure_closes_hold_at_frozen_price(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    async def fail_persistence(*args, **kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(task_app, "defer_submission", fail_persistence)
+    response = await _submit(clients, monkeypatch, {
+        "id": "prediction-untracked",
+        "urls": {"get": "https://api.replicate.com/v1/predictions/untracked"},
+    })
+    assert response.status_code == 201
+    call_id = response.headers["X-Treg-Call-Id"]
+    async with session_maker() as db:
+        assert await db.get(AsyncTaskRecord, call_id) is None
+        assert await db.get(Hold, call_id) is None
+        entry = (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == call_id, LedgerEntry.kind == "settle"))).scalar_one()
+    assert entry.amount_micro == -3000
+
+
+async def _due_submission(clients, monkeypatch, document: dict) -> str:
+    response = await _submit(clients, monkeypatch, {
+        "id": "prediction-worker",
+        "urls": {"get": "https://api.replicate.com/v1/predictions/worker"},
+    })
+    call_id = response.headers["X-Treg-Call-Id"]
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        row.next_check_at = utcnow_naive() - timedelta(seconds=1)
+        await db.commit()
+
+    async def fake_poll(row, client):
+        return 200, json.dumps(document).encode()
+
+    monkeypatch.setattr(task_app, "_poll", fake_poll)
+    return call_id
+
+
+async def test_worker_settles_terminal_success(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "succeeded", "output": ["url"]})
+    result = await task_app.settle_due()
+    assert result.settled == 1
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        hold = await db.get(Hold, call_id)
+        entry = (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == call_id, LedgerEntry.kind == "settle"))).scalar_one()
+    assert row.status == "settled" and row.settled_micro == 3000
+    assert hold is None and entry.amount_micro == -3000
+    async with session_maker() as db:
+        key = (await db.execute(select(ArchiveKey).where(
+            ArchiveKey.req_url == f"treg://asynctasks/{call_id}"))).scalar_one()
+        snapshot = (await db.execute(select(ArchiveSnapshot).where(
+            ArchiveSnapshot.key_id == key.id))).scalar_one()
+        report = await reconcile.async_task_settlement(
+            db, utcnow_naive() - timedelta(hours=1))
+    assert json.loads(snapshot.body)["status"] == "succeeded"
+    assert report["providers"] == [{
+        "provider": "replicate", "successes": 1, "failures": 0,
+        "settled_micro": 3000, "tasks": 1, "success_rate": 1.0,
+        "settled_usd": 0.003,
+    }]
+
+
+async def test_worker_releases_terminal_failure(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "failed", "error": "rejected"})
+    result = await task_app.settle_due()
+    assert result.released == 1
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        hold = await db.get(Hold, call_id)
+    assert row.status == "released" and row.settled_micro == 0 and hold is None
+
+
+async def test_worker_backs_off_unknown_status(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "provider_added_a_state"})
+    before = utcnow_naive()
+    result = await task_app.settle_due()
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        hold = await db.get(Hold, call_id)
+    assert result.backed_off == 1
+    assert row.status == "pending" and row.next_check_at > before and hold is not None
+    async with session_maker() as db:
+        hold = await db.get(Hold, call_id)
+        hold.created_at = utcnow_naive() - timedelta(seconds=ledger.hold_ttl_s() + 1)
+        await db.commit()
+        assert await ledger.reap_stale_holds(db, org_id=row.org_id) == 0
+        assert await db.get(Hold, call_id) is not None
+
+
+async def test_worker_timeout_settles_exact_reserved_amount(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "processing"})
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        row.created_at = utcnow_naive() - asynctasks.MAX_AGE - timedelta(seconds=1)
+        row.next_check_at = utcnow_naive() - timedelta(seconds=1)
+        await db.commit()
+    result = await task_app.settle_due()
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+    assert result.timed_out == 1
+    assert row.status == "timed_out" and row.settled_micro == row.reserved_micro == 3000
+    async with session_maker() as db:
+        report = await reconcile.async_task_settlement(
+            db, utcnow_naive() - timedelta(hours=1))
+    assert [item["call_id"] for item in report["fallback_settlements"]] == [call_id]
+
+
+def test_basis_derivation_and_settlement_table_vs_usage():
+    table_cost = {"table": [{"when": {"body.n": 2}, "value": 0.01}],
+                  "fallback": {"value": 0.04}, "settle": "table"}
+    table = settlement.derive_basis(
+        table_cost, request={"body": {"n": 2}}, input_schema={}, unit_micro=1_000_000,
+        terminal=True)
+    assert table["amount"]["kind"] == "table"
+    assert settlement.settle(table, {"terminal": {}}) == 10_000
+
+    usage_cost = {"settle": "usage", "usage": {"path": "usage.cost", "unit": "usd"},
+                  "fallback": {"value": 1.0}}
+    usage = settlement.derive_basis(
+        usage_cost, request={}, input_schema={}, unit_micro=1_000_000, terminal=True)
+    assert usage["amount"]["kind"] == "usage"
+    assert settlement.settle(usage, {"terminal": {"usage": {"cost": 0.125}}}) == 125_000
+
+    request = settlement.request_evidence(
+        [("id", "42"), ("count", "2")], b"{}", path_names={"id"})
+    path_table = {"table": [{"when": {"pathParams.id": 42}, "value": 0.01,
+                             "times": "queryParams.count"}],
+                  "fallback": {"value": 0.10}, "settle": "table"}
+    schema = {"pathParams": {"id": {"type": "integer"}},
+              "queryParams": {"count": {"type": "integer"}}}
+    basis = settlement.derive_basis(
+        path_table, request=request, input_schema=schema, unit_micro=1_000_000, terminal=True)
+    assert basis["reserve_micro"] == 20_000
+
+
+def test_terminal_classification_coerces_status_values_and_treats_none_as_progress():
+    descriptor = {
+        "status": {
+            "path": "task.status",
+            "success": [2],
+            "failure": ["3"],
+        },
+    }
+
+    assert asynctasks.classify_terminal(descriptor, {"task": {"status": "2"}}) == "success"
+    assert asynctasks.classify_terminal(descriptor, {"task": {"status": 3}}) == "failure"
+    assert asynctasks.classify_terminal(descriptor, {"task": {"status": None}}) == "progress"
+    assert asynctasks.classify_terminal(descriptor, {"task": {}}) == "progress"

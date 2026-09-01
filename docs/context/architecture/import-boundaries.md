@@ -28,6 +28,7 @@ sources:
   - src/treg/domain/governance/usage.py
   - src/treg/domain/identity/__init__.py
   - src/treg/domain/money/__init__.py
+  - src/treg/domain/asynctasks/__init__.py
   - src/treg/domain/capacity/__init__.py
   - src/treg/infra/upstream/__init__.py
   - src/treg/infra/upstream/injectors.py
@@ -67,6 +68,10 @@ Stage 2 adds a third contract: the complete `treg.routers` package cannot import
 indirectly. `as_packages = true` makes the source cover every current and future router submodule.
 `api.py` remains the compatibility exporter and ordered route-table host, so the allowed direction is
 API to routers.
+
+The async-task domain has the same inward-only boundary as capacity: it may not import API, routers,
+application orchestration or best-effort audit. `tests/test_call_architecture.py` pins the rule and a
+mutation proving the guard rejects a forbidden edge.
 
 Stage 3 adds domain contracts as packages appear. The complete `treg.domain.identity` package cannot import
 `treg.api`, `treg.routers`, or `treg.application`. Identity now owns session signing and validation,

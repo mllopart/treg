@@ -67,6 +67,7 @@ sources:
   - src/treg/catalog/tikhub.extended.yaml
   - src/treg/domain/catalog/__init__.py
   - src/treg/domain/catalog/store.py
+  - src/treg/domain/money/settlement.py
   - src/treg/domain/catalog/stats.py
   - src/treg/infra/catalog_observations.py
   - src/treg/routers/catalog.py
@@ -80,6 +81,11 @@ related:
 ---
 
 # Endpoint catalog — platform-grouped operations per provider
+
+The computed cost view uses a `cost.table` fallback as its scalar validated upper bound for
+eligibility and compact displays. Runtime charging evaluates the first matching row against request
+values plus catalog defaults and freezes that settlement basis. Terminal usage or the recorded table
+evidence feeds the shared money settlement function; provider variation stays declarative in YAML.
 
 ## Why
 
@@ -334,7 +340,9 @@ async:
 The validator checks the merged descriptor. Dotted JSON paths are syntactically valid; success and
 failure are non-empty, disjoint lists; `interval` is positive; poll has exactly one of `endpoint`
 or `url_from`; result has exactly one of `path` or `fetch`; every descriptor block rejects unknown
-keys. Static poll/fetch ids must be same-provider GET utility endpoints. Their mapping is explicit:
+keys. Status values are compared after string coercion on both sides; a missing or unrecognized value
+means still in progress, in both the CLI awaiter and the settlement worker. Static poll/fetch ids must
+be same-provider GET utility endpoints. Their mapping is explicit:
 poll `param` is exactly `{in, name}`, while result `fetch_param` is exactly `{in, name, value_from}`
 so a terminal field such as MiniMax's `file_id` is not confused with the utility request parameter.
 The named path/query input must exist on the target endpoint. Body-mode polling is deliberately

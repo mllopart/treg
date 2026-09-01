@@ -3,6 +3,8 @@ title: Money — prepaid balance, the ledger, Stripe, and the reports that check
 status: shipped
 sources:
   - src/treg/domain/money/__init__.py
+  - src/treg/domain/money/settlement.py
+  - src/treg/domain/asynctasks/__init__.py
   - src/treg/models.py
   - src/treg/application/billing.py
   - src/treg/application/call/idempotency.py
@@ -10,6 +12,8 @@ sources:
   - src/treg/application/call/resolve.py
   - src/treg/application/call/reserve.py
   - src/treg/application/call/settle.py
+  - src/treg/application/asynctasks.py
+  - src/treg/alembic/versions/0010_async_task_record.py
   - src/treg/application/referrals.py
   - src/treg/domain/governance/budgets.py
   - src/treg/infra/__init__.py
@@ -72,10 +76,14 @@ micro and every crossing goes through `micro_to_cents` / `cents_to_micro` in `ap
 file where two unit systems meet. Whole dollars appear only in settings and in what a human types.
 Every `*_micro` value has a display-only `*_usd` twin: **never compute against the USD field.**
 
-## The four tables and the invariant
+## The money tables and the invariant
 
 `Org.balance_micro` (materialized) · `CreditBlock` (one funding event, and what is left of it) ·
 `Hold` (an open reservation) · `LedgerEntry` (append-only journal).
+
+`AsyncTaskRecord` is the durable owner of an existing hold after a metered asynchronous submission.
+It stores the catalog-derived settlement basis, request evidence, task id or allow-listed dynamic poll
+URL, attempts and terminal state. It does not create another money movement.
 
     balance_micro == sum(block.remaining_micro) - sum(open hold.amount_micro)
 
@@ -152,6 +160,22 @@ leader election on a multi-instance deploy, and would still only run on a timer;
 stale holds is paid by the caller who benefits from it, and an org that never calls again has no
 balance to strand. Each stale release commits independently before the new balance gate. A later 402
 rolls back only the failed reservation, never a refund the reaper already made durable.
+Pending `AsyncTaskRecord` holds are excluded from this short request reaper. Their worker has a separate
+24-hour deadline and always closes the hold by settle or release.
+
+## Deferred asynchronous settlement
+
+`domain/money/settlement.py` is the single data-derived calculation seam. Reserve time freezes a basis
+with `when: response|terminal` and `amount.kind: table|usage|observed`; `settle(basis, evidence)` returns
+raw integer micro-USD and never writes the ledger. Both the normal response path and the async worker
+use it. Provider differences remain in catalog YAML; there are no provider billing adapters.
+
+For a tier-4 endpoint carrying `async`, a successful submission keeps its hold and writes an
+`AsyncTaskRecord`. Extraction failure is fail-closed: the row carries an error and settles at the
+reserved amount after 24 hours. BYOK calls create neither hold nor task row. The worker claims due
+rows with `FOR UPDATE SKIP LOCKED`, polls through the normal credential injector, settles success,
+fully releases failure, backs off nonterminal states, and settles the exact reserve with a reconcile
+marker at the deadline. Ledger writes remain exclusively through `domain/money`.
 
 **Idempotency on `topup` is enforced by the database.** `stripe_payment_intent` is UNIQUE, and `topup`
 FLUSHES its INSERT inside a SAVEPOINT, before the balance moves: the loser of a race rolls back only

@@ -227,6 +227,21 @@ def record(
     task.add_done_callback(_pending.discard)
 
 
+async def store_terminal_response(
+    call_id: str, provider: str, endpoint_id: str, status_code: int, body: bytes,
+) -> None:
+    """Archive terminal task JSON under the originating call id without fetching linked media."""
+    try:
+        await asyncio.wait_for(_store(
+        method="GET", endpoint_id=endpoint_id, provider=provider,
+        url=f"treg://asynctasks/{call_id}", caller_body=b"", headers={},
+        status_code=status_code, media_type="application/json", body=body,
+        origin="async_terminal"), timeout=_STORE_TIMEOUT_S)
+    except (asyncio.TimeoutError, TimeoutError):
+        _log.warning("terminal archive recording dropped: database did not answer in %ss",
+                     _STORE_TIMEOUT_S)
+
+
 async def drain() -> None:
     """Flush in-flight recordings — shutdown and tests. Bounded: every task carries its own
     _STORE_TIMEOUT_S, so this cannot wait longer than the slowest permitted recording."""
@@ -279,7 +294,9 @@ async def _store(
         kh = cache_key(method, endpoint_id, url, caller_body, headers)
         ch = content_hash(body)
         cap = get_settings().archive_max_body_bytes
-        keep_bytes = pol in _STORABLE and len(body) <= cap
+        # Terminal task JSON is mandatory settlement evidence. It contains only the provider's JSON
+        # envelope (possibly including expiring media URLs), never the media itself.
+        keep_bytes = (origin == "async_terminal" or pol in _STORABLE) and len(body) <= cap
         now = _utcnow()
 
         async with session_maker() as s:

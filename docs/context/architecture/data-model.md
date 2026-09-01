@@ -13,6 +13,7 @@ sources:
   - src/treg/alembic/versions/0007_overflow_spend.py
   - src/treg/alembic/versions/0008_org_platform_overflow_disabled.py
   - src/treg/alembic/versions/0009_callrecord_hit.py
+  - src/treg/alembic/versions/0010_async_task_record.py
   - src/treg/maintenance.py
   - src/treg/web/sitetrack.js
   - src/treg/models.py
@@ -33,6 +34,12 @@ related:
 ---
 
 # Data model
+
+`AsyncTaskRecord` is one deferred metered submission keyed by the original `call_id`: org,
+provider, endpoint, extracted task id, optional validated dynamic poll URL, reserved micro-USD,
+frozen descriptor/basis/request evidence, scheduling attempts, status and completion/error fields.
+Migration `0010` is expand-only. It ships with the behavior because old code ignores the new table
+while new code cannot safely retain an asynchronous hold without it.
 
 SQLModel tables in `src/treg/models.py`. Kept minimal on purpose. Org multi-tenancy adds `Org`,
 `Membership`, `Invite` and an `org_id` on the resource nouns — the tenancy mechanics live in

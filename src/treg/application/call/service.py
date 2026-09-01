@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ from ...domain.capacity import signatures as capacity_signatures
 from ...domain.capacity.view import view as capacity_view
 from ...infra.upstream.limiter import limiter as provider_limiter
 from ...infra.upstream.relay import relay
+from .. import asynctasks as async_task_app
 from .authorize import authorize_call, enforce_public_demo_limit
 from .evidence import (
     _ERROR_BODY_SLICE,
@@ -891,18 +893,37 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
             await _finish_cancelled_call(request, mk, call_ref, response)
             raise
     if mk is not None and mk.metered:
+        deferred = bool(
+            mk.settlement_basis.get("when") == "terminal" and 200 <= response.status < 300)
         try:
             request.context.finalization = FinalizationState.FINALIZING
-            charged, observed = await _platform_settle(
-                mk, response.status, body, headers=httpx.Headers(response.raw_headers),
-                # `provider_failed_`, not `call_failed_`: the latter is the branch above, where treg
-                # never got an answer (timeout, SSRF refusal, a failed oauth refresh). Both release a
-                # 502 the same way, so a shared prefix would make the two indistinguishable in the
-                # journal once the 14-day error evidence expires — and they need different fixes.
-                reason=(f"provider_failed_{response.status}" if response.status >= 500 else ""),
-                finalized=lambda: setattr(
-                    request.context, "finalization", FinalizationState.FINALIZED),
-            )
+            if deferred:
+                try:
+                    charged = await async_task_app.defer_submission(mk, body, caller.org_id)
+                    observed = None
+                    request.context.finalization = FinalizationState.FINALIZED
+                except Exception as exc:  # noqa: BLE001 — an accepted task must never orphan a hold
+                    logging.getLogger("treg.asynctasks").error(
+                        "pending-row persistence failed for call %s; settling its reserve: %s",
+                        call_ref, exc, exc_info=True)
+                    charged, observed = await _platform_settle(
+                        mk, response.status, body,
+                        observed_override=int(mk.settlement_basis.get("fallback_micro") or 0),
+                        finalized=lambda: setattr(
+                            request.context, "finalization", FinalizationState.FINALIZED),
+                    )
+                    deferred = False
+            else:
+                charged, observed = await _platform_settle(
+                    mk, response.status, body, headers=httpx.Headers(response.raw_headers),
+                    # `provider_failed_`, not `call_failed_`: the latter is the branch above, where treg
+                    # never got an answer (timeout, SSRF refusal, a failed oauth refresh). Both release a
+                    # 502 the same way, so a shared prefix would make the two indistinguishable in the
+                    # journal once the 14-day error evidence expires — and they need different fixes.
+                    reason=(f"provider_failed_{response.status}" if response.status >= 500 else ""),
+                    finalized=lambda: setattr(
+                        request.context, "finalization", FinalizationState.FINALIZED),
+                )
         except asyncio.CancelledError:
             await _finish_cancelled_call(request, mk, call_ref, response)
             raise
@@ -929,7 +950,8 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
                     tool, caller_body, _renderings)
                 err_response = _error_response_evidence(
                     response.raw_headers, body, _renderings)
-        _audit(response.status, observed_micro=observed, charged_micro=charged,
+        _audit(response.status, observed_micro=observed,
+               charged_micro=None if deferred else charged,
                duration_ms=duration_ms, response_bytes=len(body), hit=_hit_verdict(mk, response.status, body),
                error_request=err_request, error_response=err_response)
         served_via = ""

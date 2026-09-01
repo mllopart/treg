@@ -15,6 +15,7 @@ from ...domain.capacity import marks as capacity_marks
 from ...domain.capacity import overflow_spend as overflow_spend_ledger
 from ...domain.capacity import signatures as capacity_signatures
 from ...domain import money as ledger
+from ...domain.money import settlement as settlement_basis
 from ...domain.catalog import store as catalog_store
 from ...infra.db import session_maker
 from ...models import Org
@@ -414,16 +415,19 @@ async def _platform_settle(
     # not billable to the caller because the aggregator's prepaid account still incurred the cost.
     observed = ((observed_override if observed_override is not None
                  else _observed_cost_micro(mk, body, headers)) if billable else None)
+    actual = (settlement_basis.settle(
+        mk.settlement_basis, {"observed_micro": observed}) if billable else None)
     call_id, mk.call_id = mk.call_id, None  # closing is once-only, even if two paths try
     charged = 0
 
     async def _close() -> int:
         async with session_maker() as db:
             if billable:
-                charged = await ledger.settle_in_transaction(db, call_id, observed, meta={
+                charged = await ledger.settle_in_transaction(db, call_id, actual, meta={
                     "provider": mk.provider, "status_code": status_code, "cost_type": mk.cost_type,
-                    "cost_source": ("aggregator" if overflow_spend is not None
-                                    else "provider" if observed is not None else "estimate"),
+                    "cost_source": ("aggregator" if overflow_spend is not None else
+                                    "provider" if observed is not None else
+                                    mk.settlement_basis.get("amount", {}).get("kind", "estimate")),
                     **({"served_via": f"overflow:{overflow_spend[0]}"} if overflow_spend else {})})
             else:
                 await ledger.release_in_transaction(
