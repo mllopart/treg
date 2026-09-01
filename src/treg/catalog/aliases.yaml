@@ -9,7 +9,8 @@
 # scoring").
 #
 # Curation rules (enforced by scripts/catalog_validate.py check_aliases):
-#   - keys and values are lowercase single words (they pass through the same tokenizer as queries);
+#   - keys and values are lowercase ASCII words or contiguous CJK tokens (they pass through the
+#     same tokenizer as queries);
 #   - a value must actually occur in the catalog's text, or the alias is dead weight (warning);
 #   - no self-reference;
 #   - NOUNS ONLY, and the target must be a selective word. Aliasing a verb to a commoner verb
@@ -21,6 +22,17 @@
 # the key, the word the catalog HAS as the value.
 
 aliases:
+  # AI generation vocabulary — Chinese query terms, abbreviations, and model families
+  生视频: [video]
+  文生视频: [video]
+  图生视频: [video]
+  t2v: [video]
+  i2v: [video]
+  hailuo: [video]
+  seedance: [video]
+  flux: [image]
+  texttovideo: [video]
+  imagetovideo: [video]
   # sales vocabulary — the catalog says "people" / "contact"; agents say "leads" / "prospects"
   # (logged miss 2026-08-28: `find leads` matched only the provider names leadsforge/predictleads)
   lead: [leads]

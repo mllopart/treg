@@ -211,6 +211,54 @@ def _read_yaml(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def merge_async_descriptor(default: object, override: object = None) -> object:
+    """Merge a provider-wide async descriptor with one endpoint's overrides.
+
+    Most descriptor mappings merge recursively so an endpoint can change one status value or
+    interval without repeating the provider protocol. ``poll`` and ``result`` each contain a
+    mutually-exclusive mode, however: selecting one mode at endpoint level removes the inherited
+    keys of the other mode. Invalid non-mapping values are deliberately preserved for the catalog
+    validator to reject instead of being silently normalised away.
+    """
+    if default is None:
+        return override
+    if override is None:
+        return default
+    if not isinstance(default, dict) or not isinstance(override, dict):
+        return override
+
+    def merged(base: dict, extra: dict) -> dict:
+        out = dict(base)
+        for key, value in extra.items():
+            if isinstance(out.get(key), dict) and isinstance(value, dict):
+                out[key] = merged(out[key], value)
+            else:
+                out[key] = value
+        return out
+
+    out = merged(default, override)
+    poll_override = override.get("poll")
+    if isinstance(poll_override, dict):
+        endpoint_mode = "endpoint" in poll_override
+        url_mode = "url_from" in poll_override
+        if endpoint_mode and not url_mode:
+            out["poll"].pop("url_from", None)
+            out["poll"].pop("url_hosts", None)
+        elif url_mode and not endpoint_mode:
+            out["poll"].pop("endpoint", None)
+            out["poll"].pop("param", None)
+    result_override = override.get("result")
+    if isinstance(result_override, dict):
+        path_mode = "path" in result_override
+        fetch_mode = "fetch" in result_override
+        if path_mode and not fetch_mode:
+            out["result"].pop("fetch", None)
+            out["result"].pop("fetch_param", None)
+        elif fetch_mode and not path_mode:
+            out["result"].pop("path", None)
+    return out
+
+
 def _parse(directory: Path) -> Catalog:
     if not directory.is_dir():
         return Catalog()
@@ -264,6 +312,9 @@ def _parse(directory: Path) -> Catalog:
             # from a hit.
             if "expect" not in raw and doc.get("expect") is not None:
                 raw = {**raw, "expect": doc["expect"]}
+            effective_async = merge_async_descriptor(doc.get("async"), raw.get("async"))
+            if effective_async is not None:
+                raw = {**raw, "async": effective_async}
             ep = _normalize(raw, provider, directory)
             if ep["id"] in by_id:  # first file wins; ids are unique by validator contract
                 continue
@@ -426,7 +477,8 @@ def _effective_cost(raw: dict):
     its evidence is the captured example response, not a page that might have moved since. Without
     a `verified` date there is no date to stand behind, and the price stays unprovenanced."""
     cost = raw.get("cost")
-    if isinstance(cost, dict) and (cost.get("value") is not None or cost.get("type") == "free"):
+    if isinstance(cost, dict) and (cost.get("value") is not None or cost.get("table") is not None
+                                   or cost.get("type") == "free"):
         return cost
     oc = raw.get("observed_cost")
     if oc is None:
@@ -468,6 +520,9 @@ def _normalize(raw: dict, provider: str, directory: Path) -> dict:
         # per_success endpoint with no routing adapter can still tell a vendor-side failure from a
         # hit. Without it treg bills the estimate for a body the VENDOR gave away free.
         "expect": raw.get("expect") or None,
+        # How an async submission is followed to a terminal result. Provider-file defaults have
+        # already been merged above; consumers always see the complete effective descriptor.
+        "async": raw.get("async") or None,
         "cost": _effective_cost(raw),
         # Absent `tier` means core: the curated first wave predates the split, and treating an
         # unmarked endpoint as extended would hide it from the platform view entirely.
@@ -543,6 +598,7 @@ def endpoint_view(ep: dict, provider_display: str, cat: Catalog | None = None) -
         # the row — not a second request away
         "call_template": call_template(ep),
         "cost": cat.cost_view(ep["cost"], ep["provider"]) if cat else ep["cost"],
+        "async": ep.get("async"),
         # whether treg may serve this route with its OWN key, billed to the caller's balance —
         # a fact about the row that decides whether the caller needs a credential at all, so it
         # rides on the row rather than being re-derived per client (see `Catalog.platform_eligible`)
@@ -786,7 +842,7 @@ def unknown_id_hint(endpoint_id: str, cat: Catalog) -> str:
 # curated English, so an embedding index would add a dependency and a build step to beat "tiktok
 # comments" by nothing. Ranking has to be PREDICTABLE above all — an agent that can't guess why a row
 # won can't refine its query.
-_SPLIT = re.compile(r"[^a-z0-9]+")
+_SPLIT = re.compile(r"[^a-z0-9\u3400-\u9fff]+")
 
 # what a token hit is worth, by where it landed
 W_CAPABILITY = 3   # capability id/description + platform label/slug — the curated vocabulary

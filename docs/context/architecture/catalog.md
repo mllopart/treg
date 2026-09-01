@@ -221,6 +221,8 @@ capabilities:
 platforms:
   tiktok: "TikTok"
   web: "The web at large (backlinks, authority, traffic)"
+  video-gen: {label: "Video generation", category: "AI generation"}
+  image-gen: {label: "Image generation", category: "AI generation"}
 ```
 
 Rules:
@@ -229,6 +231,10 @@ Rules:
 - Adding a capability = adding it here. Provider files may carry `proposed_capabilities:` (same
   mapping shape) when curation discovers a job the taxonomy lacks; the reviewer merges them into
   this file. The validator accepts a capability that is either global or proposed in the same file.
+- Under `AI generation`, platform means the generated-media modality rather than a system that owns
+  the data. The frozen candidate vocabulary is `video-gen.from_text`, `video-gen.from_image`,
+  `video-gen.task.status`, `image-gen.from_text`, and `image-gen.edit`; text-to-video and
+  image-to-video stay separate because their required inputs and prices differ.
 
 ### `<service>.yaml`
 
@@ -280,6 +286,44 @@ endpoints:
     example_response: examples/tikhub.tiktok.user.profile.json   # written by catalog_verify.py
     docs_url: https://docs.tikhub.io/…
 ```
+
+### Async descriptors
+
+An asynchronous submission endpoint may carry an `async:` descriptor. A provider file may put the
+same block at top level as a default for every endpoint in that file; an endpoint block recursively
+overrides individual fields. Selecting `poll.endpoint` versus `poll.url_from`, or `result.path`
+versus `result.fetch`, replaces the inherited mode and its companion fields. `catalog_store` serves
+the complete effective descriptor on the normalized endpoint; this contract stage does not poll,
+relay, or settle a task.
+
+```yaml
+async:
+  id_from: task_id
+  poll:
+    endpoint: minimax.video-gen.task.status
+    param: {pathParams: task_id}
+    # Alternative mode:
+    # url_from: polling_url
+    # url_hosts: [api.example.com]
+  status:
+    path: task.status
+    success: [succeeded]
+    failure: [failed, cancelled]
+  result:
+    path: task.content.url
+    # Alternative mode:
+    # fetch: provider.video-gen.content
+    # fetch_param: {pathParams: video_id}
+    ttl_note: 9h
+  interval: 10
+```
+
+The validator checks the merged descriptor. `id_from` and `status.path` are non-empty; success and
+failure are non-empty, disjoint lists; `interval` is positive; poll has exactly one of `endpoint`
+or `url_from`; result has exactly one of `path` or `fetch`. Static poll/fetch ids must exist under
+the same provider and carry their parameter mapping. Dynamic URLs require a non-empty `url_hosts`
+allow-list. Any endpoint with `async:` must use `cost.type: per_success`. The descriptor is metadata
+beside the faithful relay: it never changes provider-native parameters or response bodies.
 
 ### `<service>.extended.yaml`
 
@@ -456,6 +500,34 @@ cost:
   confidence: documented  # verified | documented | inferred | unknown
   note: "…"               # free text: the half of the charge the schema cannot hold, caveats, traps
 ```
+
+For finite AIGC matrices, linear rates, and usage-settled generation, `value` is replaced by an
+ordered first-match `table` plus an explicit fallback upper bound:
+
+```yaml
+cost:
+  type: per_success
+  table:
+    - {when: {model: Hailuo-02, resolution: 512P, duration: 6}, value: 0.3}
+    - {when: {model: H3, resolution: 768P}, value: 0.13, times: duration}
+  fallback: {value: 2.0, note: "most expensive supported combination"}
+  currency: USD
+  settle: table                 # or usage
+  # usage: {path: usage.cost, unit: usd}
+  source: docs
+  source_url: https://example.com/pricing
+  checked: 2026-09-01
+  confidence: documented
+```
+
+Rows match in file order. `when` is a subset comparison: every named field must equal the request
+value after input defaults are applied, using exact string forms. Every `when` field must therefore
+be required or declare `default` in `input`. `times` multiplies the row value by one request field;
+that field must declare a positive `max`. `fallback` is a hand-written, explained upper bound, and
+the validator checks it is at least every row's maximum computable price (including `times × max`).
+`settle: usage` additionally requires `usage.path` and `usage.unit`; `settle: table` rejects a stray
+usage block. At this contract stage the loader preserves and serves the table, while billing still
+does not evaluate it; platform settlement belongs to the later money phase.
 
 `value` + `currency` + `per` answer *how much*; `type` + `unit` answer *per what*; `source` +
 `source_url` + `checked` + `confidence` answer *says who, and how sure*. All four questions have to
@@ -1034,7 +1106,9 @@ weight. NOUNS ONLY: aliasing a verb to a commoner verb poisons the key (`lookup:
 inflated lookup's match set 27 → 689 endpoints and destroyed its ranking power). The file is
 query-side only — it rewrites no provider text, survives every re-ingest, and the validator
 (`check_aliases`) rejects entries that could not survive the tokenizer and warns on aliases whose
-target occurs nowhere in the catalog. The SearchMiss log is its feed: a zero-result query whose
+target occurs nowhere in the catalog. The tokenizer also retains contiguous CJK text, so Chinese
+task-phrase aliases are real searchable keys rather than discarded punctuation spans.
+The SearchMiss log is its feed: a zero-result query whose
 words name an existing endpoint in different vocabulary is one row here.
 
 A query token that IS a platform slug ("tiktok", "linkedin") is the caller's hard filter, but idf

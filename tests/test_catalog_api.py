@@ -63,7 +63,7 @@ async def test_platform_detail_groups_the_same_job_across_providers(clients: Asy
     assert set(ep) == {"id", "provider", "provider_display", "name", "summary", "method", "path",
                        "scope", "tier", "kind", "domain", "call_template", "cost", "verified", "docs_url",
                        "has_example", "input", "platform_eligible", "platform_blocked",
-                       "test_request", "miss", "status", "status_note", "superseded_by"}
+                       "test_request", "miss", "status", "status_note", "superseded_by", "async"}
     assert ep["kind"] == "data", "an endpoint with no explicit kind is data (the browse surface)"
     assert ep["provider_display"] == P.get("tikhub").display_name
     assert ep["method"] == "GET" and ep["path"].startswith("/")
@@ -654,6 +654,65 @@ def test_an_extended_file_merges_into_the_same_provider(tmp_path):
     tiers = {e["id"]: e["tier"] for e in cat.endpoints}
     assert tiers["tikhub.tiktok.user.profile"] == "core"
     assert tiers["tikhub.tiktok.user.mix"] == "extended"
+
+
+def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inherited_mode(tmp_path):
+    (tmp_path / "capabilities.yaml").write_text(
+        "platforms: {video-gen: Video}\ncapabilities: {video-gen.from_text: Generate}\n")
+    (tmp_path / "demo.yaml").write_text(
+        "provider: demo\n"
+        "async:\n"
+        "  id_from: task_id\n"
+        "  poll: {endpoint: demo.video-gen.task.status, param: {pathParams: task_id}}\n"
+        "  status: {path: status, success: [done], failure: [failed]}\n"
+        "  result: {path: output.url, ttl_note: 1h}\n"
+        "  interval: 10\n"
+        "endpoints:\n"
+        "  - id: demo.video-gen.from-text\n"
+        "    capability: video-gen.from_text\n    platform: video-gen\n"
+        "    method: POST\n    path: /generate\n"
+        "    async: {status: {success: [succeeded]}, interval: 20}\n"
+        "    cost: {type: per_success, table: [{when: {model: a}, value: 1}], "
+        "fallback: {value: 1, note: upper}, currency: USD}\n"
+        "  - id: demo.video-gen.dynamic\n"
+        "    capability: video-gen.from_text\n    platform: video-gen\n"
+        "    method: POST\n    path: /dynamic\n"
+        "    async:\n"
+        "      poll: {url_from: urls.get, url_hosts: [api.example.com]}\n"
+        "      result: {fetch: demo.video-gen.content, fetch_param: {pathParams: id}}\n"
+        "  - id: demo.video-gen.task.status\n    platform: video-gen\n    tier: extended\n"
+        "    method: GET\n    path: /tasks/{task_id}\n"
+        "  - id: demo.video-gen.content\n    platform: video-gen\n    tier: extended\n"
+        "    method: GET\n    path: /content/{id}\n")
+
+    cat = cs.load(directory=tmp_path)
+    first = cat.by_id["demo.video-gen.from-text"]
+    assert first["async"]["status"] == {
+        "path": "status", "success": ["succeeded"], "failure": ["failed"]}
+    assert first["async"]["interval"] == 20
+    assert first["cost"]["table"][0]["when"] == {"model": "a"}
+    dynamic = cat.by_id["demo.video-gen.dynamic"]["async"]
+    assert dynamic["poll"] == {"url_from": "urls.get", "url_hosts": ["api.example.com"]}
+    assert dynamic["result"] == {
+        "fetch": "demo.video-gen.content", "fetch_param": {"pathParams": "id"}, "ttl_note": "1h"}
+    ambiguous = cs.merge_async_descriptor(
+        {"poll": {"endpoint": "demo.video-gen.task.status"}},
+        {"poll": {"endpoint": "demo.video-gen.task.status", "url_from": "urls.get"}},
+    )
+    assert set(ambiguous["poll"]) == {"endpoint", "url_from"}, \
+        "an invalid dual-mode override must remain visible to the validator"
+
+
+def test_ai_generation_taxonomy_and_chinese_alias_tokens_are_loaded():
+    cat = cs.load()
+    assert cat.platforms["video-gen"]["category"] == "AI generation"
+    assert cat.platforms["image-gen"]["category"] == "AI generation"
+    assert {"video-gen.from_text", "video-gen.from_image", "video-gen.task.status",
+            "image-gen.from_text", "image-gen.edit"} <= set(cat.capabilities)
+    text_to_video_zh = "\u6587\u751f\u89c6\u9891"
+    assert cat.aliases[text_to_video_zh] == ["video"]
+    assert cs._tokens(f"{text_to_video_zh} text-to-video") == [
+        text_to_video_zh, "text", "to", "video"]
 
 
 def test_a_missing_catalog_directory_is_an_empty_catalog_not_a_crash(tmp_path):
