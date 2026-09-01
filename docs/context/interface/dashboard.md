@@ -304,7 +304,9 @@ Server side (`domain.identity.access`): `require_identity` (who, from token OR s
   (`ensure_first_team`; corporate gateways swallow browser POSTs), so `maybeOnboard` shows a
   **mandatory "name your team" welcome** (`welcome.*`) that usually **renames** that team
   (`welcome.renameOrg` → `PATCH /orgs/{id}`; falls back to create — name pre-suggested from the email
-  domain via `_suggestTeamName`). Step 0 is NOT dismissable — no skip, survives Escape/backdrop — the only
+  domain via `_suggestTeamName`). For first-run rename scenarios, `loadAll` early-returns after
+  fetching `/orgs` and `/invites/mine` (skipping `/tools`, `/health`, `/bundles`) so the modal
+  appears immediately. Step 0 is NOT dismissable — no skip, survives Escape/backdrop — the only
   action is `welcomeCreate` (rename or `POST /orgs` under a 15s abort-timeout; a blocked network
   advances renames anyway and shows a "firewall may be blocking this" error on creates; marks
   onboarded). Three more steps follow **inside the same
