@@ -229,6 +229,22 @@ already curates, so an endpoint appears exactly once across both tiers. Promotin
 means moving it into the core file and completing it (steps 3–8 below) — not editing it in place;
 extended files are regenerated wholesale and hand edits are lost.
 
+OpenRouter video models are the deliberate exception to path-only collision detection: every model
+uses `POST /videos`, so `core_body_models` skips only the fixed `body.model` values already curated
+in core. Its OpenRouter and Replicate generation ingesters emit no capability guesses and explicitly
+set `domain: models`; this keeps every coverage row as a standalone model. Their
+`carry_verification(..., carry_capability=False)` migration keeps verification evidence and
+reviewed names/kinds without resurrecting old inferred capability tags.
+The core AIGC generation rows pin `domain: models` too and carry PER-MODEL capabilities
+(`video-gen.hailuo.from_text`, proposed in their provider files) rather than the job-level
+`video-gen.from_text` family. Generation models are not interchangeable — a merged row comparing
+Hailuo with Wan or Seedance is a false comparison — so the job-level capabilities are deliberately
+memberless, reserved for hand-picked models (see capabilities.yaml). Both AI generation pages
+therefore render as ONE flat model wall; the same model reachable over several routes (MiniMax
+direct, OpenRouter, Replicate all serve Hailuo) sits adjacent under model-led names, which is the
+comparison that actually means something. The per-model capability is the join key that lets those
+routes merge onto one row if that comparison is later curated.
+
 ## Schema
 
 ### capabilities.yaml
@@ -399,7 +415,8 @@ endpoints:
                                     #   where the spec offers a human title distinct from the
                                     #   description (TikHub's Apifox op names, Just One API's
                                     #   per-op summary / info.title, DataForSEO's operationId).
-                                    #   Carried across re-ingests by id, like `capability`.
+                                    #   Carried across re-ingests by id; providers may also carry
+                                    #   reviewed `capability` mappings when coverage policy permits.
     summary: "Get comments of a Zhihu answer"
     kind: data                      # optional; data (DEFAULT) | action | account | utility (see "Kind")
     cost: {type: per_success, value: 0.001, currency: USD}   # optional
@@ -416,8 +433,10 @@ endpoints:
 Rules:
 - Required: `id`, `platform`, `method`, `path`, `summary`. `platform` must exist in
   `capabilities.yaml` — that is what puts the endpoint on a marketplace shelf.
-- `capability` is normally ABSENT (extended entries are unmapped). If one is present the validator
-  holds it to the full core rules, so promotion by hand cannot silently drift.
+- `capability` is normally ABSENT (extended entries are unmapped). AIGC generation coverage forbids
+  inferred mappings entirely: comparison membership is curated in core, and extended rows use the
+  explicit `models` domain. If another extended file has a reviewed mapping, the validator holds it
+  to the full core rules so promotion by hand cannot silently drift.
 - `cost` is optional, because several providers price per API family rather than per route. When
   present it must still be a real cost model (`cost.type` from the same enum as core).
 - `input` / `test_request` appear when the provider publishes enough parameter documentation to

@@ -4,6 +4,12 @@ source:
   curated: 2026-09-02
 pricing_url: https://replicate.com/pricing
 limits: "Predictions are asynchronous by default. Output files should be copied before Replicate removes prediction data."
+proposed_capabilities:
+  # Per-model capabilities (see minimax.yaml): single-provider join keys that keep curated rows
+  # standalone in the model wall; job-level comparisons stay empty until models are hand-picked.
+  image-gen.flux-schnell.from_text: "Generate images with FLUX Schnell"
+  video-gen.seedance-1-lite.from_text: "Generate a Seedance 1 Lite video from text or an image"
+  video-gen.veo-3-1-fast.from_image: "Generate a Veo 3.1 Fast video from text or an image"
 async:
   id_from: id
   poll:
@@ -18,12 +24,13 @@ async:
   interval: 2
 endpoints:
   - id: replicate.image-gen.flux-schnell
-    capability: image-gen.from_text
+    capability: image-gen.flux-schnell.from_text
     platform: image-gen
+    domain: models
     scope: any_account
     method: POST
     path: /models/black-forest-labs/flux-schnell/predictions
-    name: "Generate images with FLUX Schnell"
+    name: "black-forest-labs/flux-schnell"
     summary: "Generate up to four images quickly from a text prompt with the official FLUX Schnell model."
     input:
       body:
@@ -58,12 +65,13 @@ endpoints:
     docs_url: https://replicate.com/black-forest-labs/flux-schnell/api
 
   - id: replicate.video-gen.seedance-1-lite
-    capability: video-gen.from_text
+    capability: video-gen.seedance-1-lite.from_text
     platform: video-gen
+    domain: models
     scope: any_account
     method: POST
     path: /models/bytedance/seedance-1-lite/predictions
-    name: "Generate video with Seedance 1 Lite"
+    name: "bytedance/seedance-1-lite"
     summary: "Generate a 480P, 720P, or 1080P video from text or a starting image."
     input:
       body:
@@ -96,12 +104,13 @@ endpoints:
     docs_url: https://replicate.com/bytedance/seedance-1-lite/api
 
   - id: replicate.video-gen.veo-3.1-fast
-    capability: video-gen.from_text
+    capability: video-gen.veo-3-1-fast.from_image
     platform: video-gen
+    domain: models
     scope: any_account
     method: POST
     path: /models/google/veo-3.1-fast/predictions
-    name: "Generate video with Veo 3.1 Fast"
+    name: "google/veo-3.1-fast"
     summary: "Generate a short video from text or an image, with optional synchronized audio."
     input:
       body:
@@ -117,7 +126,7 @@ endpoints:
             generate_audio: {type: boolean, required: false, default: true, example: false}
       bodyType: json
     test_request:
-      body: {input: {prompt: "A paper boat crosses a quiet pond.", duration: 4, resolution: 720p, aspect_ratio: "16:9", generate_audio: false}}
+      body: {input: {prompt: "Bring the scene to life with a slow camera push.", image: "https://example.com/source.png", duration: 4, resolution: 720p, aspect_ratio: "16:9", generate_audio: false}}
     cost:
       type: per_success
       table:

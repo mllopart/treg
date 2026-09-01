@@ -265,8 +265,22 @@ def test_ingesters_are_byte_deterministic(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ingest, "CATALOG", tmp_path)
     monkeypatch.setenv("REPLICATE_API_TOKEN", "placeholder-token")
-    (tmp_path / "openrouter.yaml").write_text("provider: openrouter\nendpoints: []\n")
+    (tmp_path / "openrouter.yaml").write_text(
+        "provider: openrouter\nendpoints:\n"
+        "  - id: openrouter.video-gen.curated\n    method: POST\n    path: /videos\n"
+        "    input:\n      body:\n        model: {type: string, enum: [vendor/curated]}\n")
     (tmp_path / "replicate.yaml").write_text("provider: replicate\nendpoints: []\n")
+    (tmp_path / "openrouter.extended.yaml").write_text(
+        "provider: openrouter\nendpoints:\n"
+        "  - id: openrouter.x.minimax-hailuo-test\n    method: POST\n    path: /videos\n"
+        "    capability: video-gen.from_text\n    platform: video-gen\n"
+        "    verified: '2026-09-02'\n    example_response: examples/openrouter.json\n")
+    (tmp_path / "replicate.extended.yaml").write_text(
+        "provider: replicate\nendpoints:\n"
+        "  - id: replicate.x.vendor-video-model\n    method: POST\n"
+        "    path: /models/vendor/video-model/predictions\n"
+        "    capability: video-gen.from_text\n    platform: video-gen\n"
+        "    verified: '2026-09-02'\n    example_response: examples/replicate.json\n")
     openrouter_payload = {"data": [
         {
             "id": "minimax/hailuo-test", "name": "Hailuo Test",
@@ -282,6 +296,10 @@ def test_ingesters_are_byte_deterministic(tmp_path, monkeypatch):
         {
             "id": "vendor/unbounded", "name": "Unbounded", "description": "Video model",
             "pricing_skus": {"cents_per_image_input": "2"},
+        },
+        {
+            "id": "vendor/curated", "name": "Curated", "description": "Core model",
+            "pricing_skus": {"generate": "1"},
         },
     ]}
     replicate_model = {
@@ -307,14 +325,24 @@ def test_ingesters_are_byte_deterministic(tmp_path, monkeypatch):
     assert [row["value"] for row in priced["cost"]["table"]] == [0.05, 0.1]
     assert priced["cost"]["fallback"]["value"] >= 0.5
     assert priced["cost"]["confidence"] == "documented"
+    assert priced["domain"] == "models"
+    assert "capability" not in priced
+    assert priced["verified"] == "2026-09-02"
+    assert priced["example_response"] == "examples/openrouter.json"
     unbounded = next(ep for ep in openrouter_doc["endpoints"] if ep["id"].endswith("unbounded"))
     assert unbounded["cost"]["confidence"] == "unknown"
     assert unbounded["cost"]["value"] is None
+    assert not any(ep["id"].endswith("curated") for ep in openrouter_doc["endpoints"])
 
     replicate_path, _ = ingest.ingest_replicate(False)
     first_replicate = replicate_path.read_bytes()
     ingest.ingest_replicate(False)
     assert replicate_path.read_bytes() == first_replicate
     doc = yaml.safe_load(replicate_path.read_text())
-    input_spec = doc["endpoints"][0]["input"]["body"]["input"]
+    generated = doc["endpoints"][0]
+    input_spec = generated["input"]["body"]["input"]
     assert input_spec["properties"]["prompt"]["required"] is True
+    assert generated["domain"] == "models"
+    assert "capability" not in generated
+    assert generated["verified"] == "2026-09-02"
+    assert generated["example_response"] == "examples/replicate.json"

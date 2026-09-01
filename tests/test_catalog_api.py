@@ -717,6 +717,33 @@ def test_ai_generation_taxonomy_and_chinese_alias_tokens_are_loaded():
         text_to_video_zh, "text", "to", "video"]
 
 
+async def test_ai_generation_pages_keep_comparisons_curated_and_coverage_in_models(
+        clients: AsyncClient):
+    video = (await clients.get("/catalog/platforms/video-gen")).json()
+    # One ledger of standalone model rows. Generation models are not interchangeable, so the
+    # job-level capabilities (video-gen.from_text/.from_image) hold NO endpoints — a merged row
+    # comparing Hailuo with Wan or Seedance would be a false comparison. Curated core rows carry
+    # per-model capabilities instead (single-provider, so they render as singles in the wall);
+    # the job-level rows return only when specific models are hand-picked into them.
+    assert {section["domain"] for section in video["domains"]} == {"models"}
+    rows = video["domains"][0]["rows"]
+    assert all(row["kind"] == "single" for row in rows)
+    caps = {row["capability"] for row in rows}
+    assert "video-gen.from_text" not in caps and "video-gen.from_image" not in caps
+    ids = {endpoint["id"] for row in rows for endpoint in row["endpoints"]}
+    assert {"minimax.video-gen.from_text", "minimax.video-gen.from_image",
+            "openrouter.video-gen.wan-3-0.from_text",
+            "replicate.video-gen.seedance-1-lite"} <= ids
+
+    image = (await clients.get("/catalog/platforms/image-gen")).json()
+    assert {section["domain"] for section in image["domains"]} == {"models"}
+    image_rows = [row for section in image["domains"] for row in section["rows"]]
+    assert all(row["kind"] == "single" for row in image_rows)
+    assert "image-gen.from_text" not in {row["capability"] for row in image_rows}
+    image_ids = {endpoint["id"] for row in image_rows for endpoint in row["endpoints"]}
+    assert {"minimax.image-gen.from_text", "replicate.image-gen.flux-schnell"} <= image_ids
+
+
 def test_a_missing_catalog_directory_is_an_empty_catalog_not_a_crash(tmp_path):
     cat = cs.load(directory=tmp_path / "nope")
     assert cat.endpoints == [] and cat.platforms == {}

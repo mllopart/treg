@@ -125,6 +125,11 @@ platforms:
 
 capabilities:
   # --- AI generation ---------------------------------------------------------------------------
+  # The four generation capabilities are DELIBERATELY memberless: generation models are not
+  # interchangeable, so a merged row comparing different models would be a false comparison.
+  # They are reserved for hand-picked models (cheapest / best value / best quality) — mapping a
+  # row here is an editorial act, not a modality tag. Rows carry per-model capabilities instead
+  # (proposed in their provider files), the join key for same-model multi-route comparison.
   video-gen.from_text: "Generate a video from a text prompt"
   video-gen.from_image: "Animate an image into a video (image-to-video)"
   video-gen.task.status: "Check an async video generation task"
