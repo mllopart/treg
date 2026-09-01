@@ -244,6 +244,9 @@ Bare **`treg connections`** now lists (the subparser is `required=False` with a 
   success, 2 for a provider terminal failure, 3 for timeout/interruption/recoverable polling failure,
   and 1 for malformed usage or metadata. Fetch-mode results print a retrieval command rather than
   downloading binary content; result URLs, reservations, progress, and TTL reminders stay on stderr.
+  Running that command preserves a non-text response byte-for-byte on stdout (for example,
+  `treg call openrouter.video-gen.result.retrieve -p video_id=... > result.mp4`); the upstream
+  `Content-Type` remains authoritative, so the async descriptor does not duplicate a result format.
 - **`audit`** (`cmd_audit`, `--limit`, `--calls` | `--runs`) — the single "who did what" view. `--calls`
   and `--runs` delegate to `cmd_calls` / `cmd_runs` verbatim (the old `treg calls` / `treg runs` output,
   byte for byte). The **default merged view** is the only new behaviour in the consolidation: it fetches

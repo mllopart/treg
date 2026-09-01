@@ -55,7 +55,7 @@ sources:
   - src/treg/catalog/google-tag-manager.extended.yaml
   - src/treg/catalog/justoneapi.extended.yaml
   - src/treg/catalog/minimax.yaml
-  - src/treg/catalog/examples/minimax.video-gen.file.retrieve.json
+  - src/treg/catalog/examples/minimax.video-gen.result.retrieve.json
   - src/treg/catalog/examples/minimax.video-gen.from_image.json
   - src/treg/catalog/examples/minimax.video-gen.task.status.json
   - src/treg/catalog/openrouter.yaml
@@ -71,6 +71,8 @@ sources:
   - src/treg/infra/catalog_observations.py
   - src/treg/routers/catalog.py
   - tests/test_aigc_pr_b.py
+  - tests/test_catalog_api.py
+  - tests/test_catalog_validate.py
 related:
   - architecture/money.md
   - architecture/proxy-model.md
@@ -243,7 +245,7 @@ Rules:
   mapping shape) when curation discovers a job the taxonomy lacks; the reviewer merges them into
   this file. The validator accepts a capability that is either global or proposed in the same file.
 - Under `AI generation`, platform means the generated-media modality rather than a system that owns
-  the data. The frozen candidate vocabulary is `video-gen.from_text`, `video-gen.from_image`,
+  the data. The frozen vocabulary is `video-gen.from_text`, `video-gen.from_image`,
   `video-gen.task.status`, `image-gen.from_text`, and `image-gen.edit`; text-to-video and
   image-to-video stay separate because their required inputs and prices differ.
 
@@ -312,7 +314,7 @@ async:
   id_from: task_id
   poll:
     endpoint: minimax.video-gen.task.status
-    param: {pathParams: task_id}
+    param: {in: queryParams, name: task_id}
     # Alternative mode:
     # url_from: polling_url
     # url_hosts: [api.example.com]
@@ -323,29 +325,50 @@ async:
   result:
     path: task.content.url
     # Alternative mode:
-    # fetch: provider.video-gen.content
-    # fetch_param: {pathParams: video_id}
+    # fetch: provider.video-gen.result.retrieve
+    # fetch_param: {in: pathParams, name: video_id, value_from: id}
     ttl_note: 9h
   interval: 10
 ```
 
-The validator checks the merged descriptor. `id_from` and `status.path` are non-empty; success and
+The validator checks the merged descriptor. Dotted JSON paths are syntactically valid; success and
 failure are non-empty, disjoint lists; `interval` is positive; poll has exactly one of `endpoint`
-or `url_from`; result has exactly one of `path` or `fetch`. Static poll/fetch ids must exist under
-the same provider and carry their parameter mapping. Dynamic URLs require a non-empty `url_hosts`
-allow-list. Any endpoint with `async:` must use `cost.type: per_success`. The descriptor is metadata
+or `url_from`; result has exactly one of `path` or `fetch`; every descriptor block rejects unknown
+keys. Static poll/fetch ids must be same-provider GET utility endpoints. Their mapping is explicit:
+poll `param` is exactly `{in, name}`, while result `fetch_param` is exactly `{in, name, value_from}`
+so a terminal field such as MiniMax's `file_id` is not confused with the utility request parameter.
+The named path/query input must exist on the target endpoint. Body-mode polling is deliberately
+outside the frozen contract because no surveyed provider uses it and the generic client could not
+faithfully execute it. Dynamic URLs require a non-empty `url_hosts` allow-list. Any endpoint with
+`async:` must use `cost.type: per_success`. The descriptor is metadata
 beside the faithful relay: it never changes provider-native parameters or response bodies. The call
 router serializes the effective descriptor into `X-Treg-Async` before the response stream starts;
 it does not inspect or buffer the upstream body.
 
+MiniMax's curated Hailuo routes intentionally use the v1 three-step protocol: submit with
+`POST /v1/video_generation`, poll `GET /v1/query/video_generation` with a query-string task id and
+the terminal values `Success`/`Fail`, then pass the returned `file_id` to
+`GET /v1/files/retrieve`. The v2 generation path serves the H3 family and is not a protocol upgrade
+for the Hailuo models in this listing.
+
 OpenRouter ingest reads `/api/v1/videos/models`, emits one extended row per model on the shared
-`POST /videos` route, and converts duration-based `pricing_skus` into reserve tables with
-`rate_card_api` provenance. Token-priced SKUs preserve the live rate card but remain explicitly
-unknown/BYOK-only because the directory does not expose a safe request-to-token upper bound.
+`POST /videos` route, and converts duration-based `pricing_skus` into price tables with
+`rate_card_api` provenance. It converts `cents_per_*` units to USD, maps resolution/audio dimensions,
+orders narrower conditions first, and collapses indistinguishable mode SKUs to the highest rate.
+Token, image-input, reference-image, and megapixel-second SKUs preserve the live rate card but stay
+explicitly unknown/BYOK-only because one bounded `times` field cannot safely describe them.
+Two verified Wan 3.0 480p/2s calls each quoted $0.10 from `pricing_skus` but reported
+`usage.cost: 0.2125`; rate-card rows are therefore `documented`, not observed-cost `verified`.
 Replicate ingest joins the official text-to-image, text-to-video, and image-to-video collections;
 each generated row takes its request fields from `latest_version.openapi_schema`. Its generated
 prices are explicitly unknown, while the curated core rows carry per-model page provenance. Both
 ingesters sort their inputs and produce byte-identical output when upstream data is unchanged.
+
+Utility capability names still describe the utility's actual job. OpenRouter model discovery uses
+the file-local proposed `video-gen.models.list`; OpenRouter and MiniMax content retrieval use the
+proposed `video-gen.result.retrieve`; only polling uses the frozen `video-gen.task.status`. These
+rows remain hidden management plumbing because `kind: utility`, and proposed capabilities avoid
+expanding the global generation vocabulary merely to satisfy the core-row capability requirement.
 
 ### `<service>.extended.yaml`
 
@@ -530,8 +553,8 @@ ordered first-match `table` plus an explicit fallback upper bound:
 cost:
   type: per_success
   table:
-    - {when: {model: Hailuo-02, resolution: 512P, duration: 6}, value: 0.3}
-    - {when: {model: H3, resolution: 768P}, value: 0.13, times: duration}
+    - {when: {body.model: Model-A, body.resolution: 512P, body.duration: 6}, value: 0.3}
+    - {when: {body.model: Model-B, body.resolution: 768P}, value: 0.13, times: body.duration}
   fallback: {value: 2.0, note: "most expensive supported combination"}
   currency: USD
   settle: table                 # or usage
@@ -543,13 +566,20 @@ cost:
 ```
 
 Rows match in file order. `when` is a subset comparison: every named field must equal the request
-value after input defaults are applied, using exact string forms. Every `when` field must therefore
-be required or declare `default` in `input`. `times` multiplies the row value by one request field;
-that field must declare a positive `max`. `fallback` is a hand-written, explained upper bound, and
-the validator checks it is at least every row's maximum computable price (including `times × max`).
-`settle: usage` additionally requires `usage.path` and `usage.unit`; `settle: table` rejects a stray
-usage block. At this contract stage the loader preserves and serves the table, while billing still
-does not evaluate it; platform settlement belongs to the later money phase.
+value after input defaults are applied, using exact forms. References are location-qualified dotted
+paths (`body.model`, `body.input.num_outputs`, `queryParams.mode`) so query/body collisions cannot
+silently price the wrong field. Every `when` field must be required or declare `default` in `input`.
+`times` multiplies by one numeric request field with a positive `max`. Narrow rows must precede broad
+ones; the validator rejects a later condition shadowed by an earlier subset, duplicate conditions,
+unknown row/fallback keys, non-finite values, values outside input enum/min/max, and simultaneous
+`cost.value` plus `cost.table`. `fallback` is a hand-written, explained global upper bound, checked
+against every row's maximum computable price. With `settle: table`, an unmatched successful call
+reserves and settles fallback. With `settle: usage`, every call reserves fallback even when a table
+row matches; the table is an expected quote and terminal usage is authoritative. This is the safe
+interpretation after observed OpenRouter minimum/fee behavior exceeded a matching SKU quote.
+`settle: usage` requires exactly a dotted `usage.path` and supported `usage.unit`; `settle: table`
+rejects a stray usage block. At this contract stage the loader preserves and serves the table,
+while billing still does not evaluate it; platform settlement belongs to the later money phase.
 
 `value` + `currency` + `per` answer *how much*; `type` + `unit` answer *per what*; `source` +
 `source_url` + `checked` + `confidence` answer *says who, and how sure*. All four questions have to
@@ -1129,7 +1159,16 @@ inflated lookup's match set 27 → 689 endpoints and destroyed its ranking power
 query-side only — it rewrites no provider text, survives every re-ingest, and the validator
 (`check_aliases`) rejects entries that could not survive the tokenizer and warns on aliases whose
 target occurs nowhere in the catalog. The tokenizer also retains contiguous CJK text, so Chinese
-task-phrase aliases are real searchable keys rather than discarded punctuation spans.
+task-phrase aliases are real searchable keys rather than discarded punctuation spans. Alias keys
+remain one token, while targets may be lowercase hyphenated phrases because matching tests the
+target string directly against catalog text. This makes `t2v` → `text-to-video` selective. The
+original AIGC aliases mapped model names and Chinese task phrases to `video`/`image`: live
+`treg catalog search` expanded Hailuo/Seedance/t2v to 521 endpoints and Flux to 172, including
+YouTube and unrelated image utilities. Model-family aliases were removed once real endpoint text
+contained those names; compact and Chinese task terms now target only `text-to-video` and/or
+`image-to-video`. A post-change CLI run returned 10 Hailuo, 11 Seedance, and 14 Flux matches; the
+task aliases returned 24 for t2v, 39 for i2v, 21 for the Chinese text-to-video query, and 35 for the
+Chinese image-to-video query, with generation models at the top instead of unrelated utilities.
 The SearchMiss log is its feed: a zero-result query whose
 words name an existing endpoint in different vocabulary is one row here.
 

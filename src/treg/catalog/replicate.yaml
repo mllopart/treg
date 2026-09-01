@@ -1,7 +1,7 @@
 provider: replicate
 source:
   docs: https://replicate.com/docs/topics/models/official-models
-  curated: 2026-09-01
+  curated: 2026-09-02
 pricing_url: https://replicate.com/pricing
 limits: "Predictions are asynchronous by default. Output files should be copied before Replicate removes prediction data."
 async:
@@ -41,10 +41,10 @@ endpoints:
     cost:
       type: per_success
       table:
-        - {when: {input.num_outputs: 1}, value: 0.003}
-        - {when: {input.num_outputs: 2}, value: 0.006}
-        - {when: {input.num_outputs: 3}, value: 0.009}
-        - {when: {input.num_outputs: 4}, value: 0.012}
+        - {when: {body.input.num_outputs: 1}, value: 0.003}
+        - {when: {body.input.num_outputs: 2}, value: 0.006}
+        - {when: {body.input.num_outputs: 3}, value: 0.009}
+        - {when: {body.input.num_outputs: 4}, value: 0.012}
       fallback: {value: 0.012, note: "Four outputs at $0.003 each are the explicit request maximum."}
       currency: USD
       settle: table
@@ -82,9 +82,9 @@ endpoints:
     cost:
       type: per_success
       table:
-        - {when: {input.resolution: 480p}, value: 0.018, times: input.duration}
-        - {when: {input.resolution: 720p}, value: 0.036, times: input.duration}
-        - {when: {input.resolution: 1080p}, value: 0.072, times: input.duration}
+        - {when: {body.input.resolution: 480p}, value: 0.018, times: body.input.duration}
+        - {when: {body.input.resolution: 720p}, value: 0.036, times: body.input.duration}
+        - {when: {body.input.resolution: 1080p}, value: 0.072, times: body.input.duration}
       fallback: {value: 0.864, note: "Twelve seconds at the highest documented 1080P rate is the explicit request maximum."}
       currency: USD
       settle: table
@@ -121,8 +121,8 @@ endpoints:
     cost:
       type: per_success
       table:
-        - {when: {input.generate_audio: false}, value: 0.10, times: input.duration}
-        - {when: {input.generate_audio: true}, value: 0.15, times: input.duration}
+        - {when: {body.input.generate_audio: false}, value: 0.10, times: body.input.duration}
+        - {when: {body.input.generate_audio: true}, value: 0.15, times: body.input.duration}
       fallback: {value: 1.20, note: "Eight seconds with audio at $0.15 per second is the explicit request maximum."}
       currency: USD
       settle: table

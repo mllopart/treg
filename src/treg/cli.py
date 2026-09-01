@@ -2266,8 +2266,7 @@ def _json_path(document, path: str):
 
 
 def _async_param(rule: dict) -> tuple[str, str]:
-    location, name = next(iter(rule.items()))
-    return str(location), str(name)
+    return str(rule["in"]), str(rule["name"])
 
 
 def _clock_report(clock, message: str) -> None:
@@ -2355,9 +2354,12 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
                 result["result"] = _json_path(terminal, result_rule["path"])
             else:
                 _, fetch_name = _async_param(result_rule["fetch_param"])
-                fetch_value = _json_path(terminal, fetch_name)
+                value_from = result_rule["fetch_param"]["value_from"]
+                fetch_value = _json_path(terminal, value_from)
                 if fetch_value in (None, ""):
-                    fetch_value = task_id
+                    return {"code": 1, "task_id": str(task_id), "recovery": recovery,
+                            "response": response, "status": status,
+                            "error": f"the terminal response has no {value_from!r} for result retrieval"}
                 result["fetch_command"] = (
                     f"treg call {result_rule['fetch']} -p "
                     f"{shlex.quote(fetch_name + '=' + str(fetch_value))}"
@@ -2377,6 +2379,18 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
 def _print_raw_response(response: httpx.Response) -> None:
     sys.stdout.write(response.text)
     sys.stdout.flush()
+
+
+def _show_call_response(response: httpx.Response) -> None:
+    content_type = getattr(response, "headers", {}).get("content-type", "").partition(";")[0].strip().lower()
+    if content_type and content_type != "application/json" and not content_type.endswith("+json") \
+            and not content_type.startswith("text/"):
+        sys.stdout.buffer.write(response.content)
+        sys.stdout.buffer.flush()
+        if response.status_code >= 400:
+            raise SystemExit(1)
+        return
+    _show(response)
 
 
 def cmd_call(args, cfg) -> None:
@@ -2452,7 +2466,7 @@ def cmd_call(args, cfg) -> None:
     with _client(cfg) as c:
         submission = c.request(method, f"/call/{rest}", params=params, content=content, headers=headers)
         if not getattr(args, "await_task", False) or not submission.headers.get("X-Treg-Async"):
-            _show(submission)
+            _show_call_response(submission)
             return
         if submission.status_code >= 400:
             _show(submission)

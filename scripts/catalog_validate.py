@@ -40,6 +40,7 @@ never what a claim on it is worth.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 import sys
 from pathlib import Path
@@ -77,7 +78,9 @@ TIERS = {"core", "extended"}
 KINDS = {"data", "action", "account", "utility"}
 ENDPOINT_STATUSES = {"retired", "broken"}
 QUERY_ARRAY_ENCODINGS = {"json", "comma", "repeated"}
-ASYNC_PARAM_LOCATIONS = {"pathParams", "queryParams", "body"}
+ASYNC_PARAM_LOCATIONS = {"pathParams", "queryParams"}
+JSON_PATH = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+)(?:\.(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+))*")
+USAGE_UNITS = {"usd", "token"}
 # the section heading an endpoint files under on its platform page — one lowercase word
 DOMAIN = re.compile(r"[a-z][a-z0-9_]*")
 HOST = re.compile(
@@ -155,7 +158,7 @@ def _as_date(value) -> dt.date | None:
 
 
 def _input_fields(input_schema: object) -> dict[str, dict]:
-    """Flatten the catalog's request locations for declarative price-table references."""
+    """Flatten request fields to location-qualified dotted paths used by price tables."""
     if not isinstance(input_schema, dict):
         return {}
     fields: dict[str, dict] = {}
@@ -165,11 +168,11 @@ def _input_fields(input_schema: object) -> dict[str, dict]:
             continue
         if isinstance(block.get("properties"), dict):
             block = block["properties"]
-        def add_fields(items: dict, prefix: str = "") -> None:
+        def add_fields(items: dict, prefix: str) -> None:
             for name, spec in items.items():
                 if not isinstance(spec, dict):
                     continue
-                field = f"{prefix}.{name}" if prefix else str(name)
+                field = f"{prefix}.{name}"
                 fields.setdefault(field, spec)
                 nested = spec.get("properties")
                 if isinstance(nested, dict):
@@ -177,11 +180,17 @@ def _input_fields(input_schema: object) -> dict[str, dict]:
 
         for name, spec in block.items():
             if isinstance(spec, dict):
-                fields.setdefault(str(name), spec)
+                field = f"{location}.{name}"
+                fields.setdefault(field, spec)
                 nested = spec.get("properties")
                 if isinstance(nested, dict):
-                    add_fields(nested, str(name))
+                    add_fields(nested, field)
     return fields
+
+
+def _finite_number(value: object) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(float(value)))
 
 
 def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[str]) -> None:
@@ -192,24 +201,45 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
         return
     fields = _input_fields(input_schema)
     maximums: list[float] = []
+    prior_conditions: list[dict] = []
     for index, row in enumerate(table):
         rwhere = f"{where}:cost.table[{index}]"
         if not isinstance(row, dict):
             fail(errors, rwhere, "table row must be a mapping")
             continue
+        extra = set(row) - {"when", "value", "times"}
+        if extra:
+            fail(errors, rwhere, f"unknown table row keys: {sorted(extra)}")
         when = row.get("when")
         if not isinstance(when, dict) or not when:
             fail(errors, rwhere, "when must be a non-empty mapping")
         else:
-            for field in when:
+            for previous in prior_conditions:
+                if all(field in when and when[field] == value for field, value in previous.items()):
+                    fail(errors, rwhere, "when is shadowed by an earlier subset row")
+                    break
+            prior_conditions.append(when)
+            for field, expected in when.items():
                 spec = fields.get(str(field))
                 if spec is None:
                     fail(errors, rwhere, f"when field '{field}' is not declared in input")
                 elif spec.get("required") is not True and "default" not in spec:
                     fail(errors, rwhere, f"when field '{field}' must be required or declare a default")
+                elif isinstance(expected, (dict, list)) or expected is None:
+                    fail(errors, rwhere, f"when field '{field}' must compare a scalar value")
+                else:
+                    if isinstance(spec.get("enum"), list) and expected not in spec["enum"]:
+                        fail(errors, rwhere, f"when value {expected!r} is not in input enum for '{field}'")
+                    if _finite_number(expected):
+                        lower = spec.get("min")
+                        upper = spec.get("max")
+                        if _finite_number(lower) and float(expected) < float(lower):
+                            fail(errors, rwhere, f"when value {expected!r} is below input min for '{field}'")
+                        if _finite_number(upper) and float(expected) > float(upper):
+                            fail(errors, rwhere, f"when value {expected!r} is above input max for '{field}'")
         value = row.get("value")
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-            fail(errors, rwhere, "value must be a non-negative number")
+        if not _finite_number(value) or float(value) < 0:
+            fail(errors, rwhere, "value must be a finite non-negative number")
             continue
         maximum = float(value)
         if "times" in row:
@@ -221,8 +251,11 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
             if spec is None:
                 fail(errors, rwhere, f"times field '{times}' is not declared in input")
                 continue
+            if spec.get("type") not in ("integer", "number"):
+                fail(errors, rwhere, f"times field '{times}' must be numeric")
+                continue
             upper = spec.get("max")
-            if not isinstance(upper, (int, float)) or isinstance(upper, bool) or upper <= 0:
+            if not _finite_number(upper) or float(upper) <= 0:
                 fail(errors, rwhere, f"times field '{times}' must declare a positive input max")
                 continue
             maximum *= float(upper)
@@ -232,13 +265,15 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
     if not isinstance(fallback, dict):
         fail(errors, where, "cost.table requires a fallback mapping with value and note")
         return
+    extra = set(fallback) - {"value", "note"}
+    if extra:
+        fail(errors, where, f"cost.fallback has unknown keys: {sorted(extra)}")
     fallback_value = fallback.get("value")
-    if (not isinstance(fallback_value, (int, float)) or isinstance(fallback_value, bool)
-            or fallback_value < 0):
-        fail(errors, where, "cost.fallback.value must be a non-negative number")
+    if not _finite_number(fallback_value) or float(fallback_value) < 0:
+        fail(errors, where, "cost.fallback.value must be a finite non-negative number")
     if not str(fallback.get("note") or "").strip():
         fail(errors, where, "cost.fallback.note must explain the explicit upper bound")
-    if isinstance(fallback_value, (int, float)) and not isinstance(fallback_value, bool) \
+    if _finite_number(fallback_value) \
             and maximums and float(fallback_value) < max(maximums):
         fail(errors, where, "cost.fallback.value must be at least every table row's maximum "
                             "computable price")
@@ -248,30 +283,52 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
         fail(errors, where, "cost.table settle must be 'table' or 'usage'")
     usage = cost.get("usage")
     if settle == "usage":
-        if not isinstance(usage, dict) or not str(usage.get("path") or "").strip() \
-                or not str(usage.get("unit") or "").strip():
+        if not isinstance(usage, dict) or set(usage) != {"path", "unit"} \
+                or not isinstance(usage.get("path"), str) or not JSON_PATH.fullmatch(usage["path"]) \
+                or usage.get("unit") not in USAGE_UNITS:
             fail(errors, where, "cost.settle 'usage' requires usage.path and usage.unit")
     elif usage is not None:
         fail(errors, where, "cost.usage is only valid with settle: usage")
 
 
 def check_async_descriptor(descriptor: object, where: str, provider: str,
-                           endpoint_providers: dict[str, str], cost: object,
+                           endpoint_index: dict[str, dict], cost: object,
                            errors: list[str]) -> None:
     """Validate the effective (provider defaults + endpoint overrides) async descriptor."""
     if not isinstance(descriptor, dict):
         fail(errors, where, "async must be a mapping")
         return
-    if not isinstance(descriptor.get("id_from"), str) or not descriptor["id_from"].strip():
-        fail(errors, where, "async.id_from must be non-empty")
+    extra = set(descriptor) - {"id_from", "poll", "status", "result", "interval"}
+    if extra:
+        fail(errors, where, f"async has unknown keys: {sorted(extra)}")
+    if not isinstance(descriptor.get("id_from"), str) or not JSON_PATH.fullmatch(descriptor["id_from"]):
+        fail(errors, where, "async.id_from must be a dotted JSON path")
 
-    def check_param(value: object, label: str) -> None:
-        if not isinstance(value, dict) or len(value) != 1:
-            fail(errors, where, f"{label} requires a single task-id parameter mapping")
+    def check_param(value: object, label: str, target: dict | None, *, fetch: bool = False) -> None:
+        expected = {"in", "name", "value_from"} if fetch else {"in", "name"}
+        if not isinstance(value, dict) or set(value) != expected:
+            suffix = " and value_from" if fetch else ""
+            fail(errors, where, f"{label} requires exactly in, name{suffix}")
             return
-        location, field = next(iter(value.items()))
+        location, field = value.get("in"), value.get("name")
         if location not in ASYNC_PARAM_LOCATIONS or not isinstance(field, str) or not field.strip():
-            fail(errors, where, f"{label} must map pathParams, queryParams, or body to a field name")
+            fail(errors, where, f"{label} must name an input field in pathParams or queryParams")
+        elif target is not None and f"{location}.{field}" not in _input_fields(target.get("input")):
+            fail(errors, where, f"{label} target does not declare input field '{location}.{field}'")
+        if fetch and (not isinstance(value.get("value_from"), str)
+                      or not JSON_PATH.fullmatch(value["value_from"])):
+            fail(errors, where, f"{label}.value_from must be a dotted terminal-response JSON path")
+
+    def target_for(endpoint_id: str, label: str) -> dict | None:
+        target = endpoint_index.get(endpoint_id)
+        if target is None or target.get("provider") != provider:
+            fail(errors, where, f"{label} '{endpoint_id}' must be an existing same-provider catalog id")
+            return None
+        if target.get("kind") != "utility":
+            fail(errors, where, f"{label} '{endpoint_id}' must have kind utility")
+        if target.get("method") != "GET":
+            fail(errors, where, f"{label} '{endpoint_id}' must use GET")
+        return target
 
     poll = descriptor.get("poll")
     if not isinstance(poll, dict):
@@ -283,25 +340,28 @@ def check_async_descriptor(descriptor: object, where: str, provider: str,
             fail(errors, where, "async.poll needs exactly one of endpoint or url_from")
         if modes == ["endpoint"]:
             target = str(poll["endpoint"])
-            if endpoint_providers.get(target) != provider:
-                fail(errors, where, f"async.poll.endpoint '{target}' must be an existing same-provider catalog id")
-            check_param(poll.get("param"), "async.poll endpoint mode")
-            if "url_hosts" in poll:
-                fail(errors, where, "async.poll.url_hosts is only valid with url_from")
+            target_ep = target_for(target, "async.poll.endpoint")
+            if set(poll) != {"endpoint", "param"}:
+                fail(errors, where, "async.poll endpoint mode allows only endpoint and param")
+            check_param(poll.get("param"), "async.poll endpoint mode", target_ep)
         elif modes == ["url_from"]:
+            if set(poll) != {"url_from", "url_hosts"}:
+                fail(errors, where, "async.poll url_from mode allows only url_from and url_hosts")
+            if not isinstance(poll.get("url_from"), str) or not JSON_PATH.fullmatch(poll["url_from"]):
+                fail(errors, where, "async.poll.url_from must be a dotted JSON path")
             hosts = poll.get("url_hosts")
             if (not isinstance(hosts, list) or not hosts
                     or any(not isinstance(host, str) or not HOST.fullmatch(host) for host in hosts)):
                 fail(errors, where, "async.poll.url_from requires non-empty url_hosts")
-            if "param" in poll:
-                fail(errors, where, "async.poll.param is only valid with endpoint")
 
     status = descriptor.get("status")
     if not isinstance(status, dict):
         fail(errors, where, "async.status must be a mapping")
     else:
-        if not isinstance(status.get("path"), str) or not status["path"].strip():
-            fail(errors, where, "async.status.path must be non-empty")
+        if set(status) != {"path", "success", "failure"}:
+            fail(errors, where, "async.status requires exactly path, success, and failure")
+        if not isinstance(status.get("path"), str) or not JSON_PATH.fullmatch(status["path"]):
+            fail(errors, where, "async.status.path must be a dotted JSON path")
         success, failure = status.get("success"), status.get("failure")
         for name, values in (("success", success), ("failure", failure)):
             if not isinstance(values, list) or not values:
@@ -323,11 +383,15 @@ def check_async_descriptor(descriptor: object, where: str, provider: str,
             fail(errors, where, "async.result needs exactly one of path or fetch")
         if modes == ["fetch"]:
             target = str(result["fetch"])
-            if endpoint_providers.get(target) != provider:
-                fail(errors, where, f"async.result.fetch '{target}' must be an existing same-provider catalog id")
-            check_param(result.get("fetch_param"), "async.result fetch mode")
-        elif modes == ["path"] and "fetch_param" in result:
-            fail(errors, where, "async.result.fetch_param is only valid with fetch")
+            target_ep = target_for(target, "async.result.fetch")
+            if set(result) - {"fetch", "fetch_param", "ttl_note"}:
+                fail(errors, where, "async.result fetch mode allows only fetch, fetch_param, and ttl_note")
+            check_param(result.get("fetch_param"), "async.result fetch mode", target_ep, fetch=True)
+        elif modes == ["path"]:
+            if set(result) - {"path", "ttl_note"}:
+                fail(errors, where, "async.result path mode allows only path and ttl_note")
+            if not isinstance(result.get("path"), str) or not JSON_PATH.fullmatch(result["path"]):
+                fail(errors, where, "async.result.path must be a dotted JSON path")
         if "ttl_note" in result and (not isinstance(result.get("ttl_note"), str)
                                      or not result["ttl_note"].strip()):
             fail(errors, where, "async.result.ttl_note must be non-empty when present")
@@ -363,6 +427,8 @@ def check_cost(cost: dict, where: str, errors: list[str], warnings: list[str],
         fail(errors, where, f"cost.per '{per}' must be a positive integer (the quantity `value` covers)")
     has_table = "table" in cost
     if has_table:
+        if "value" in cost:
+            fail(errors, where, "cost.value and cost.table are mutually exclusive")
         check_cost_table(cost, input_schema, where, errors)
     if (settle := cost.get("settle")) is not None and not has_table \
             and settle not in ("base", "modifiers"):
@@ -510,16 +576,17 @@ def check_fx(errors: list[str]) -> None:
                                 "lives only in prose cannot be computed against")
 
 
-_WORD = re.compile(r"^[a-z0-9\u3400-\u9fff]+$")
+_ALIAS_KEY = re.compile(r"^[a-z0-9\u3400-\u9fff]+$")
+_ALIAS_TARGET = re.compile(r"^(?:[a-z0-9]+(?:-[a-z0-9]+)*|[\u3400-\u9fff]+)$")
 
 
 def check_aliases(errors: list[str], warnings: list[str]) -> None:
     """aliases.yaml — the query-side vocabulary map (catalog_store.search).
 
-    Keys and values ride through the same tokenizer as queries, so anything that is not one
-    lowercase word can never match and is a silent no-op — an error, not a style point. A value
-    that occurs nowhere in the catalog's own text is dead weight (the alias exists to bridge INTO
-    the catalog's vocabulary), flagged as a warning because provider text moves under it."""
+    Keys must survive query tokenization as one token. Targets may also be a lowercase hyphenated
+    phrase: matching uses the target string directly against catalog text, which is exactly what
+    lets compact queries such as t2v bridge to the selective phrase text-to-video. A target that
+    occurs nowhere in catalog text is dead weight and produces a warning."""
     path = CATALOG / "aliases.yaml"
     if not path.exists():
         return
@@ -527,14 +594,14 @@ def check_aliases(errors: list[str], warnings: list[str]) -> None:
     corpus = "\n".join(p.read_text().lower() for p in CATALOG.glob("*.yaml") if p != path)
     for key, vals in (doc.get("aliases") or {}).items():
         where = f"aliases.yaml {key}"
-        if not _WORD.match(str(key)):
+        if not _ALIAS_KEY.fullmatch(str(key)):
             fail(errors, where, "key must be one lowercase word (it must survive the tokenizer)")
         if not isinstance(vals, list) or not vals:
             fail(errors, where, "value must be a non-empty list of words")
             continue
         for v in vals:
-            if not _WORD.match(str(v)):
-                fail(errors, where, f"alias {v!r} must be one lowercase word")
+            if not _ALIAS_TARGET.fullmatch(str(v)):
+                fail(errors, where, f"alias {v!r} must be one lowercase word or hyphenated phrase")
             elif str(v) == str(key):
                 fail(errors, where, "alias points at itself")
             elif str(v) not in corpus:
@@ -558,7 +625,7 @@ def main(argv: list[str]) -> int:
     # Successors can appear later in the same file or in another provider. Build the reference map
     # before validating any row; a one-pass lookup would make validity depend on filename order.
     endpoint_status: dict[str, str] = {}
-    endpoint_providers: dict[str, str] = {}
+    endpoint_index: dict[str, dict] = {}
     for path in all_files:
         data = yaml.safe_load(path.read_text()) or {}
         if not isinstance(data, dict):
@@ -566,8 +633,9 @@ def main(argv: list[str]) -> int:
         provider = str(data.get("provider") or path.stem.removesuffix(".extended"))
         for ep in data.get("endpoints") or []:
             if isinstance(ep, dict) and ep.get("id"):
-                endpoint_status[str(ep["id"])] = str(ep.get("status") or "").strip()
-                endpoint_providers[str(ep["id"])] = provider
+                endpoint_id = str(ep["id"])
+                endpoint_status[endpoint_id] = str(ep.get("status") or "").strip()
+                endpoint_index[endpoint_id] = {**ep, "provider": provider}
     files = list(all_files)
     # "tikhub" selects tikhub.yaml AND tikhub.extended.yaml — a service is both its tiers
     service_of = {p: p.stem.removesuffix(".extended") for p in files}
@@ -678,7 +746,7 @@ def main(argv: list[str]) -> int:
                     check_cost(cost, where, errors, warnings, inp)
             effective_async = merge_async_descriptor(data.get("async"), ep.get("async"))
             if effective_async is not None:
-                check_async_descriptor(effective_async, where, str(service), endpoint_providers,
+                check_async_descriptor(effective_async, where, str(service), endpoint_index,
                                        cost, errors)
             if ep.get("verified"):
                 ex = ep.get("example_response")

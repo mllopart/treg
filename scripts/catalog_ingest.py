@@ -981,9 +981,11 @@ def ingest_justoneapi(refresh: bool) -> tuple[Path, dict]:
 def _aigc_async_static() -> dict:
     return {
         "id_from": "id",
-        "poll": {"endpoint": "openrouter.video-gen.task.status", "param": {"pathParams": "id"}},
+        "poll": {"endpoint": "openrouter.video-gen.task.status",
+                 "param": {"in": "pathParams", "name": "id"}},
         "status": {"path": "status", "success": ["completed"], "failure": ["failed"]},
-        "result": {"fetch": "openrouter.video-gen.content", "fetch_param": {"pathParams": "id"}},
+        "result": {"fetch": "openrouter.video-gen.result.retrieve",
+                   "fetch_param": {"in": "pathParams", "name": "id", "value_from": "id"}},
         "interval": 30,
     }
 
@@ -1001,27 +1003,36 @@ def _openrouter_capability(model: dict) -> str | None:
 def _openrouter_cost(model: dict) -> dict:
     model_id = str(model["id"])
     skus = model.get("pricing_skus") or {}
-    if any(str(name).startswith("video_tokens") for name in skus):
+    unsupported = (
+        "video_tokens", "cents_per_image_input", "cents_per_megapixel_second", "reference_images",
+    )
+    if any(str(name).startswith(unsupported) for name in skus):
         return {
             "type": "per_success",
             "value": None,
             "confidence": "unknown",
             "source": "rate_card_api",
             "source_url": "https://openrouter.ai/api/v1/videos/models",
-            "checked": "2026-09-01",
+            "checked": "2026-09-02",
             "rate_card": {str(name): str(value) for name, value in sorted(skus.items())},
-            "note": "The live rate card prices video tokens, but the model directory does not publish a safe request-to-token upper bound; this row remains BYOK-only.",
+            "note": "The live rate card includes a token, image-input, reference-image, or megapixel-second dimension that the request schema cannot bound with one declarative times field; this row remains BYOK-only.",
         }
     durations = [int(v) for v in (model.get("supported_durations") or []) if isinstance(v, int)]
     duration_max = max(durations, default=30)
-    rows: list[dict] = []
+    grouped: dict[tuple, dict] = {}
     maxima: list[float] = []
+    minimum = 0.0
     for sku, raw in sorted(skus.items()):
         try:
             value = float(raw)
         except (TypeError, ValueError):
             continue
-        when: dict[str, object] = {"model": model_id}
+        if str(sku).startswith("minimum_cents_per_generation"):
+            minimum = max(minimum, value / 100)
+            continue
+        if str(sku).startswith("cents_per_"):
+            value /= 100
+        when: dict[str, object] = {"body.model": model_id}
         row: dict[str, object] = {"when": when, "value": value}
         if sku == "generate":
             maxima.append(value)
@@ -1029,26 +1040,35 @@ def _openrouter_cost(model: dict) -> dict:
             resolution = next((r for r in (model.get("supported_resolutions") or [])
                                if str(r).lower() in str(sku).lower()), None)
             if resolution:
-                when["resolution"] = resolution
-            row["times"] = "duration"
+                when["body.resolution"] = resolution
+            if "with_audio" in str(sku) and "without_audio" not in str(sku):
+                when["body.generate_audio"] = True
+            elif "without_audio" in str(sku):
+                when["body.generate_audio"] = False
+            row["times"] = "body.duration"
             maxima.append(value * duration_max)
-        rows.append(row)
-    upper = max(maxima, default=0.0)
+        key = (tuple(sorted(when.items())), row.get("times"))
+        previous = grouped.get(key)
+        if previous is None or float(previous["value"]) < value:
+            grouped[key] = row
+    rows = list(grouped.values())
+    rows.sort(key=lambda row: (-len(row["when"]), sorted(row["when"].items())))
+    upper = max([minimum, *maxima], default=0.0)
     return {
         "type": "per_success",
-        "table": rows or [{"when": {"model": model_id}, "value": 0.0}],
+        "table": rows or [{"when": {"body.model": model_id}, "value": 0.0}],
         "fallback": {
             "value": round(upper + 0.000000001, 9),
-            "note": "The highest live SKU multiplied by the model's maximum duration is the explicit reserve upper bound.",
+            "note": "The highest live SKU multiplied by the model's maximum duration is the global usage-settlement reservation ceiling.",
         },
         "currency": "USD",
         "settle": "usage",
         "usage": {"path": "usage.cost", "unit": "usd"},
         "source": "rate_card_api",
         "source_url": "https://openrouter.ai/api/v1/videos/models",
-        "checked": "2026-09-01",
-        "confidence": "verified",
-        "note": "Reserve uses the live rate card; terminal usage.cost is the actual USD charge.",
+        "checked": "2026-09-02",
+        "confidence": "documented",
+        "note": "Table rows quote the live rate card. Indistinguishable mode-specific SKUs collapse to the highest rate. Usage settlement reserves the global fallback because observed charges can include a minimum or fee absent from pricing_skus, then settles terminal usage.cost.",
     }
 
 
@@ -1075,6 +1095,10 @@ def ingest_openrouter(refresh: bool) -> tuple[Path, dict]:
             ratios = [str(v) for v in model["supported_aspect_ratios"]]
             body["aspect_ratio"] = {"type": "string", "required": False,
                                     "default": ratios[0], "enum": ratios}
+        sku_names = [str(name) for name in (model.get("pricing_skus") or {})]
+        if isinstance(model.get("generate_audio"), bool) or any("_audio" in name for name in sku_names):
+            body["generate_audio"] = {"type": "boolean", "required": False,
+                                      "default": bool(model.get("generate_audio", False))}
         ep = {
             "id": slug_id("openrouter", model_id),
             "tier": "extended",
@@ -1090,7 +1114,7 @@ def ingest_openrouter(refresh: bool) -> tuple[Path, dict]:
         if capability := _openrouter_capability(model):
             ep["capability"] = capability
         endpoints.append(ep)
-    source = {"spec_urls": [url], "ingested": "2026-09-01"}
+    source = {"spec_urls": [url], "ingested": "2026-09-02"}
     out = write_extended("openrouter", source, endpoints, [
         "Generated from the live video model rate card. Each row fixes one model on POST /videos.",
         "pricing_skus become a first-match reserve table; terminal usage.cost remains authoritative.",

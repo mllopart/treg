@@ -1,12 +1,15 @@
 provider: openrouter
 source:
   docs: https://openrouter.ai/docs/guides/overview/multimodal/video-generation
-  curated: 2026-09-01
+  curated: 2026-09-02
 pricing_url: https://openrouter.ai/api/v1/videos/models
+proposed_capabilities:
+  video-gen.models.list: "List available video generation models"
+  video-gen.result.retrieve: "Retrieve completed video generation content"
 endpoints:
   - id: openrouter.video-gen.models.list
     kind: utility
-    capability: video-gen.task.status
+    capability: video-gen.models.list
     platform: video-gen
     scope: any_account
     method: GET
@@ -34,9 +37,9 @@ endpoints:
     cost: {type: free, value: 0, currency: USD, unit: call, note: "Video task status checks are free."}
     docs_url: https://openrouter.ai/docs/api/api-reference/video-generation/get-videos
 
-  - id: openrouter.video-gen.content
+  - id: openrouter.video-gen.result.retrieve
     kind: utility
-    capability: video-gen.task.status
+    capability: video-gen.result.retrieve
     platform: video-gen
     scope: any_account
     method: GET

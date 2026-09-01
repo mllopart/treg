@@ -663,7 +663,7 @@ def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inhe
         "provider: demo\n"
         "async:\n"
         "  id_from: task_id\n"
-        "  poll: {endpoint: demo.video-gen.task.status, param: {pathParams: task_id}}\n"
+        "  poll: {endpoint: demo.video-gen.task.status, param: {in: pathParams, name: task_id}}\n"
         "  status: {path: status, success: [done], failure: [failed]}\n"
         "  result: {path: output.url, ttl_note: 1h}\n"
         "  interval: 10\n"
@@ -672,14 +672,14 @@ def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inhe
         "    capability: video-gen.from_text\n    platform: video-gen\n"
         "    method: POST\n    path: /generate\n"
         "    async: {status: {success: [succeeded]}, interval: 20}\n"
-        "    cost: {type: per_success, table: [{when: {model: a}, value: 1}], "
+        "    cost: {type: per_success, table: [{when: {body.model: a}, value: 1}], "
         "fallback: {value: 1, note: upper}, currency: USD}\n"
         "  - id: demo.video-gen.dynamic\n"
         "    capability: video-gen.from_text\n    platform: video-gen\n"
         "    method: POST\n    path: /dynamic\n"
         "    async:\n"
         "      poll: {url_from: urls.get, url_hosts: [api.example.com]}\n"
-        "      result: {fetch: demo.video-gen.content, fetch_param: {pathParams: id}}\n"
+        "      result: {fetch: demo.video-gen.content, fetch_param: {in: pathParams, name: id, value_from: id}}\n"
         "  - id: demo.video-gen.task.status\n    platform: video-gen\n    tier: extended\n"
         "    method: GET\n    path: /tasks/{task_id}\n"
         "  - id: demo.video-gen.content\n    platform: video-gen\n    tier: extended\n"
@@ -690,11 +690,13 @@ def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inhe
     assert first["async"]["status"] == {
         "path": "status", "success": ["succeeded"], "failure": ["failed"]}
     assert first["async"]["interval"] == 20
-    assert first["cost"]["table"][0]["when"] == {"model": "a"}
+    assert first["cost"]["table"][0]["when"] == {"body.model": "a"}
     dynamic = cat.by_id["demo.video-gen.dynamic"]["async"]
     assert dynamic["poll"] == {"url_from": "urls.get", "url_hosts": ["api.example.com"]}
     assert dynamic["result"] == {
-        "fetch": "demo.video-gen.content", "fetch_param": {"pathParams": "id"}, "ttl_note": "1h"}
+        "fetch": "demo.video-gen.content",
+        "fetch_param": {"in": "pathParams", "name": "id", "value_from": "id"},
+        "ttl_note": "1h"}
     ambiguous = cs.merge_async_descriptor(
         {"poll": {"endpoint": "demo.video-gen.task.status"}},
         {"poll": {"endpoint": "demo.video-gen.task.status", "url_from": "urls.get"}},
@@ -710,7 +712,7 @@ def test_ai_generation_taxonomy_and_chinese_alias_tokens_are_loaded():
     assert {"video-gen.from_text", "video-gen.from_image", "video-gen.task.status",
             "image-gen.from_text", "image-gen.edit"} <= set(cat.capabilities)
     text_to_video_zh = "\u6587\u751f\u89c6\u9891"
-    assert cat.aliases[text_to_video_zh] == ["video"]
+    assert cat.aliases[text_to_video_zh] == ["text-to-video"]
     assert cs._tokens(f"{text_to_video_zh} text-to-video") == [
         text_to_video_zh, "text", "to", "video"]
 

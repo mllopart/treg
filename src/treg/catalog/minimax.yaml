@@ -1,21 +1,23 @@
 provider: minimax
 source:
   docs: https://platform.minimax.io/docs/api-reference/api-overview
-  curated: 2026-09-01
+  curated: 2026-09-02
 pricing_url: https://platform.minimax.io/docs/guides/pricing-paygo
 limits: "Video generation is asynchronous; poll every 10 seconds. Generated download URLs expire after about 9 hours."
+proposed_capabilities:
+  video-gen.result.retrieve: "Retrieve completed video generation content"
 async:
   id_from: task_id
   poll:
     endpoint: minimax.video-gen.task.status
-    param: {queryParams: task_id}
+    param: {in: queryParams, name: task_id}
   status:
     path: status
     success: [Success]
     failure: [Fail]
   result:
-    fetch: minimax.video-gen.file.retrieve
-    fetch_param: {queryParams: file_id}
+    fetch: minimax.video-gen.result.retrieve
+    fetch_param: {in: queryParams, name: file_id, value_from: file_id}
     ttl_note: "9h"
   interval: 10
 endpoints:
@@ -40,17 +42,17 @@ endpoints:
     cost: &hailuo_cost
       type: per_success
       table:
-        - {when: {model: MiniMax-Hailuo-02, resolution: 512P, duration: 6}, value: 0.10}
-        - {when: {model: MiniMax-Hailuo-02, resolution: 512P, duration: 10}, value: 0.15}
-        - {when: {model: MiniMax-Hailuo-02, resolution: 768P, duration: 6}, value: 0.28}
-        - {when: {model: MiniMax-Hailuo-02, resolution: 768P, duration: 10}, value: 0.56}
-        - {when: {model: MiniMax-Hailuo-02, resolution: 1080P, duration: 6}, value: 0.49}
-        - {when: {model: MiniMax-Hailuo-2.3, resolution: 768P, duration: 6}, value: 0.28}
-        - {when: {model: MiniMax-Hailuo-2.3, resolution: 768P, duration: 10}, value: 0.56}
-        - {when: {model: MiniMax-Hailuo-2.3, resolution: 1080P, duration: 6}, value: 0.49}
-        - {when: {model: MiniMax-Hailuo-2.3-Fast, resolution: 768P, duration: 6}, value: 0.19}
-        - {when: {model: MiniMax-Hailuo-2.3-Fast, resolution: 768P, duration: 10}, value: 0.32}
-        - {when: {model: MiniMax-Hailuo-2.3-Fast, resolution: 1080P, duration: 6}, value: 0.33}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 512P, body.duration: 6}, value: 0.10}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 512P, body.duration: 10}, value: 0.15}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 768P, body.duration: 6}, value: 0.28}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 768P, body.duration: 10}, value: 0.56}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 1080P, body.duration: 6}, value: 0.49}
+        - {when: {body.model: MiniMax-Hailuo-2.3, body.resolution: 768P, body.duration: 6}, value: 0.28}
+        - {when: {body.model: MiniMax-Hailuo-2.3, body.resolution: 768P, body.duration: 10}, value: 0.56}
+        - {when: {body.model: MiniMax-Hailuo-2.3, body.resolution: 1080P, body.duration: 6}, value: 0.49}
+        - {when: {body.model: MiniMax-Hailuo-2.3-Fast, body.resolution: 768P, body.duration: 6}, value: 0.19}
+        - {when: {body.model: MiniMax-Hailuo-2.3-Fast, body.resolution: 768P, body.duration: 10}, value: 0.32}
+        - {when: {body.model: MiniMax-Hailuo-2.3-Fast, body.resolution: 1080P, body.duration: 6}, value: 0.33}
       fallback: {value: 0.56, note: "The highest documented Hailuo combination is a 10-second 768P video; unmatched combinations reserve this explicit upper bound."}
       currency: USD
       settle: table
@@ -104,9 +106,9 @@ endpoints:
     example_response: examples/minimax.video-gen.task.status.json
     docs_url: https://platform.minimax.io/docs/api-reference/video-generation-query
 
-  - id: minimax.video-gen.file.retrieve
+  - id: minimax.video-gen.result.retrieve
     kind: utility
-    capability: video-gen.task.status
+    capability: video-gen.result.retrieve
     platform: video-gen
     scope: any_account
     method: GET
@@ -120,7 +122,7 @@ endpoints:
     test_request: {queryParams: {file_id: "437019583025452"}}
     cost: {type: free, value: 0, currency: USD, unit: call, note: "Generated file metadata retrieval is free."}
     verified: 2026-09-01
-    example_response: examples/minimax.video-gen.file.retrieve.json
+    example_response: examples/minimax.video-gen.result.retrieve.json
     docs_url: https://platform.minimax.io/docs/api-reference/file-management-retrieve
 
   - id: minimax.image-gen.from_text
@@ -145,7 +147,7 @@ endpoints:
     cost:
       type: per_success
       table:
-        - {when: {model: image-01}, value: 0.0035, times: n}
+        - {when: {body.model: image-01}, value: 0.0035, times: body.n}
       fallback: {value: 0.0315, note: "Nine image-01 outputs at the documented per-image rate are the explicit request maximum."}
       currency: USD
       settle: table
