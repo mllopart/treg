@@ -1,0 +1,51 @@
+provider: openrouter
+source:
+  docs: https://openrouter.ai/docs/guides/overview/multimodal/video-generation
+  curated: 2026-09-01
+pricing_url: https://openrouter.ai/api/v1/videos/models
+endpoints:
+  - id: openrouter.video-gen.models.list
+    kind: utility
+    capability: video-gen.task.status
+    platform: video-gen
+    scope: any_account
+    method: GET
+    path: /videos/models
+    name: "List current video generation models"
+    summary: "List OpenRouter video models, supported inputs, dimensions, durations, and live pricing SKUs."
+    input: {}
+    test_request: {}
+    cost: {type: free, value: 0, currency: USD, unit: call, note: "The public video model rate card is free to read."}
+    docs_url: https://openrouter.ai/docs/api/api-reference/video-generation/list-videos-models
+
+  - id: openrouter.video-gen.task.status
+    kind: utility
+    capability: video-gen.task.status
+    platform: video-gen
+    scope: any_account
+    method: GET
+    path: /videos/{id}
+    name: "Check an OpenRouter video task"
+    summary: "Read the status, terminal usage, and output metadata for an OpenRouter video task."
+    input:
+      pathParams:
+        id: {type: string, required: true, example: job-abc123}
+    test_request: {pathParams: {id: job-abc123}}
+    cost: {type: free, value: 0, currency: USD, unit: call, note: "Video task status checks are free."}
+    docs_url: https://openrouter.ai/docs/api/api-reference/video-generation/get-videos
+
+  - id: openrouter.video-gen.content
+    kind: utility
+    capability: video-gen.task.status
+    platform: video-gen
+    scope: any_account
+    method: GET
+    path: /videos/{id}/content
+    name: "Retrieve OpenRouter video content"
+    summary: "Retrieve the generated binary video content after a task completes."
+    input:
+      pathParams:
+        id: {type: string, required: true, example: job-abc123}
+    test_request: {pathParams: {id: job-abc123}}
+    cost: {type: free, value: 0, currency: USD, unit: call, note: "Retrieving completed video content does not create another generation."}
+    docs_url: https://openrouter.ai/docs/api/api-reference/video-generation/get-videos-content

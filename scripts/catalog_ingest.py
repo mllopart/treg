@@ -16,7 +16,8 @@ Properties this script guarantees (they are why it exists instead of a one-off s
   - **core wins**: any (method, path) already in the provider's core yaml is skipped, never duplicated.
   - **cached**: downloads land in ~/.cache/treg-catalog-ingest (override TREG_INGEST_CACHE);
     `--refresh` re-fetches. Nothing is cached inside the repo.
-  - **credential-free**: no source below needs auth, so no secret can reach a committed file.
+  - **secret-safe**: generated files never contain credentials. Replicate's official collection
+    requires `REPLICATE_API_TOKEN`; the token is used only as a request header.
 
 See docs/context/architecture/catalog.md for the extended-entry schema.
 """
@@ -108,7 +109,7 @@ def clean(s: str) -> str:
 
 
 def english(s: str) -> str:
-    """TikHub summaries are '中文描述/English description' — keep the English half."""
+    """TikHub summaries contain Chinese text followed by English text; keep the English half."""
     s = clean(s)
     parts = s.split("/")
     for i in range(len(parts)):
@@ -645,7 +646,7 @@ def ingest_tikhub(refresh: bool) -> tuple[Path, dict]:
             "path": uri,
             "summary": summary,
         }
-        # Apifox gives every documented op a human title ("中文/Get TikHub user info") distinct
+        # Apifox gives every documented operation a bilingual human title distinct
         # from the openapi summary — the English half is the display `name`.
         title = short_name((doc_op or {}).get("name") or "", summary)
         if title:
@@ -977,7 +978,236 @@ def ingest_justoneapi(refresh: bool) -> tuple[Path, dict]:
     return write_extended("justoneapi", source, endpoints, notes), {"missing": len(missing)}
 
 
-INGESTERS = {"tikhub": ingest_tikhub, "dataforseo": ingest_dataforseo, "justoneapi": ingest_justoneapi}
+def _aigc_async_static() -> dict:
+    return {
+        "id_from": "id",
+        "poll": {"endpoint": "openrouter.video-gen.task.status", "param": {"pathParams": "id"}},
+        "status": {"path": "status", "success": ["completed"], "failure": ["failed"]},
+        "result": {"fetch": "openrouter.video-gen.content", "fetch_param": {"pathParams": "id"}},
+        "interval": 30,
+    }
+
+
+def _openrouter_capability(model: dict) -> str | None:
+    model_id = str(model.get("id") or "").lower()
+    if not any(part in model_id for part in ("hailuo", "seedance", "veo", "sora")):
+        return None
+    description = str(model.get("description") or "").lower()
+    if model.get("supported_frame_images") and "text-to-video" not in description:
+        return "video-gen.from_image"
+    return "video-gen.from_text"
+
+
+def _openrouter_cost(model: dict) -> dict:
+    model_id = str(model["id"])
+    skus = model.get("pricing_skus") or {}
+    if any(str(name).startswith("video_tokens") for name in skus):
+        return {
+            "type": "per_success",
+            "value": None,
+            "confidence": "unknown",
+            "source": "rate_card_api",
+            "source_url": "https://openrouter.ai/api/v1/videos/models",
+            "checked": "2026-09-01",
+            "rate_card": {str(name): str(value) for name, value in sorted(skus.items())},
+            "note": "The live rate card prices video tokens, but the model directory does not publish a safe request-to-token upper bound; this row remains BYOK-only.",
+        }
+    durations = [int(v) for v in (model.get("supported_durations") or []) if isinstance(v, int)]
+    duration_max = max(durations, default=30)
+    rows: list[dict] = []
+    maxima: list[float] = []
+    for sku, raw in sorted(skus.items()):
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        when: dict[str, object] = {"model": model_id}
+        row: dict[str, object] = {"when": when, "value": value}
+        if sku == "generate":
+            maxima.append(value)
+        else:
+            resolution = next((r for r in (model.get("supported_resolutions") or [])
+                               if str(r).lower() in str(sku).lower()), None)
+            if resolution:
+                when["resolution"] = resolution
+            row["times"] = "duration"
+            maxima.append(value * duration_max)
+        rows.append(row)
+    upper = max(maxima, default=0.0)
+    return {
+        "type": "per_success",
+        "table": rows or [{"when": {"model": model_id}, "value": 0.0}],
+        "fallback": {
+            "value": round(upper + 0.000000001, 9),
+            "note": "The highest live SKU multiplied by the model's maximum duration is the explicit reserve upper bound.",
+        },
+        "currency": "USD",
+        "settle": "usage",
+        "usage": {"path": "usage.cost", "unit": "usd"},
+        "source": "rate_card_api",
+        "source_url": "https://openrouter.ai/api/v1/videos/models",
+        "checked": "2026-09-01",
+        "confidence": "verified",
+        "note": "Reserve uses the live rate card; terminal usage.cost is the actual USD charge.",
+    }
+
+
+def ingest_openrouter(refresh: bool) -> tuple[Path, dict]:
+    url = "https://openrouter.ai/api/v1/videos/models"
+    models = json.loads(fetch(url, "openrouter_video_models.json", refresh=refresh))["data"]
+    endpoints = []
+    for model in sorted(models, key=lambda row: str(row.get("id") or "")):
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            continue
+        durations = [int(v) for v in (model.get("supported_durations") or []) if isinstance(v, int)]
+        resolutions = [str(v) for v in (model.get("supported_resolutions") or [])]
+        body = {
+            "model": {"type": "string", "required": True, "enum": [model_id], "example": model_id},
+            "prompt": {"type": "string", "required": True, "example": "A paper boat crosses a quiet pond at sunrise."},
+            "duration": {"type": "integer", "required": False, "default": min(durations, default=5),
+                         "max": max(durations, default=30)},
+        }
+        if resolutions:
+            body["resolution"] = {"type": "string", "required": False,
+                                  "default": resolutions[0], "enum": resolutions}
+        if model.get("supported_aspect_ratios"):
+            ratios = [str(v) for v in model["supported_aspect_ratios"]]
+            body["aspect_ratio"] = {"type": "string", "required": False,
+                                    "default": ratios[0], "enum": ratios}
+        ep = {
+            "id": slug_id("openrouter", model_id),
+            "tier": "extended",
+            "platform": "video-gen",
+            "method": "POST",
+            "path": "/videos",
+            "name": str(model.get("name") or model_id)[:60],
+            "summary": clean(str(model.get("description") or f"Generate video with {model_id}."))[:400],
+            "input": {"body": body, "bodyType": "json"},
+            "cost": _openrouter_cost(model),
+            "docs_url": f"https://openrouter.ai/{model_id}",
+        }
+        if capability := _openrouter_capability(model):
+            ep["capability"] = capability
+        endpoints.append(ep)
+    source = {"spec_urls": [url], "ingested": "2026-09-01"}
+    out = write_extended("openrouter", source, endpoints, [
+        "Generated from the live video model rate card. Each row fixes one model on POST /videos.",
+        "pricing_skus become a first-match reserve table; terminal usage.cost remains authoritative.",
+    ])
+    # Provider defaults belong at the document top level, not inside source provenance.
+    generated = yaml.safe_load(out.read_text())
+    doc = {"provider": generated["provider"], "source": generated["source"],
+           "async": _aigc_async_static(), "endpoints": generated["endpoints"]}
+    header, _, _ = out.read_text().partition("provider:")
+    out.write_text(header + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=4096))
+    return out, {"models": len(endpoints)}
+
+
+def _replicate_schema(model: dict) -> dict:
+    schema = (((model.get("latest_version") or {}).get("openapi_schema") or {})
+              .get("components", {}).get("schemas", {}).get("Input", {}))
+    required = set(schema.get("required") or [])
+    properties = {}
+    for name, raw in sorted((schema.get("properties") or {}).items(),
+                            key=lambda item: (item[1].get("x-order", 9999), item[0])):
+        field = {key: raw[key] for key in ("type", "description", "default", "minimum", "maximum", "enum")
+                 if key in raw}
+        if "minimum" in field:
+            field["min"] = field.pop("minimum")
+        if "maximum" in field:
+            field["max"] = field.pop("maximum")
+        field["required"] = name in required
+        properties[name] = field
+    return {"type": "object", "required": True, "properties": properties}
+
+
+def _replicate_capability(collections: set[str]) -> str | None:
+    if "text-to-video" in collections:
+        return "video-gen.from_text"
+    if "image-to-video" in collections:
+        return "video-gen.from_image"
+    if "text-to-image" in collections:
+        return "image-gen.from_text"
+    return None
+
+
+def _replicate_head_model(owner: str, name: str) -> bool:
+    model_id = f"{owner}/{name}".lower()
+    return any(part in model_id for part in ("flux", "hailuo", "minimax", "seedance", "veo", "sora"))
+
+
+def ingest_replicate(refresh: bool) -> tuple[Path, dict]:
+    token = os.environ.get("REPLICATE_API_TOKEN", "").strip()
+    if not token:
+        raise SystemExit("replicate ingest requires REPLICATE_API_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"}
+    collections: dict[tuple[str, str], tuple[dict, set[str]]] = {}
+    urls = []
+    for slug in ("text-to-image", "text-to-video", "image-to-video"):
+        url = f"https://api.replicate.com/v1/collections/{slug}"
+        urls.append(url)
+        data = json.loads(fetch(url, f"replicate_{slug}.json", refresh=refresh, headers=headers))
+        for model in data.get("models") or []:
+            if not model.get("is_official"):
+                continue
+            key = (str(model.get("owner") or ""), str(model.get("name") or ""))
+            if not all(key):
+                continue
+            collections.setdefault(key, (model, set()))[1].add(slug)
+    skip = core_routes("replicate")
+    endpoints = []
+    for (owner, name), (model, groups) in sorted(collections.items()):
+        path = f"/models/{owner}/{name}/predictions"
+        if ("POST", path) in skip:
+            continue
+        model_capability = _replicate_capability(groups)
+        ep = {
+            "id": slug_id("replicate", f"{owner}/{name}"),
+            "tier": "extended",
+            "platform": model_capability.split(".")[0] if model_capability else "image-gen",
+            "method": "POST",
+            "path": path,
+            "name": f"{owner}/{name}"[:60],
+            "summary": clean(str(model.get("description") or f"Run the official {owner}/{name} model."))[:400],
+            "input": {"body": {"input": _replicate_schema(model)}, "bodyType": "json"},
+            "cost": {"type": "per_success", "value": None, "confidence": "unknown",
+                     "note": "Replicate does not expose this model's price in the collection API; the generated row is BYOK-only."},
+            "docs_url": str(model.get("url") or f"https://replicate.com/{owner}/{name}"),
+        }
+        # Collection membership establishes the platform. Capability remains reviewed judgment,
+        # so only the named head families receive the cross-provider stamp automatically.
+        if model_capability and _replicate_head_model(owner, name):
+            ep["capability"] = model_capability
+        endpoints.append(ep)
+    async_default = {
+        "id_from": "id",
+        "poll": {"url_from": "urls.get", "url_hosts": ["api.replicate.com"]},
+        "status": {"path": "status", "success": ["succeeded"],
+                   "failure": ["failed", "canceled"]},
+        "result": {"path": "output"},
+        "interval": 2,
+    }
+    out = write_extended("replicate", {"spec_urls": urls, "ingested": "2026-09-01"}, endpoints, [
+        "Generated from Replicate's maintained text-to-image, text-to-video, and image-to-video collections.",
+        "Only official models are included. Input fields come from latest_version.openapi_schema.",
+        "Generated rows intentionally carry no price; an unpriced row is BYOK-only.",
+    ])
+    generated = yaml.safe_load(out.read_text())
+    doc = {"provider": generated["provider"], "source": generated["source"],
+           "async": async_default, "endpoints": generated["endpoints"]}
+    header, _, _ = out.read_text().partition("provider:")
+    out.write_text(header + yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=4096))
+    return out, {"models": len(endpoints)}
+
+
+INGESTERS = {
+    "tikhub": ingest_tikhub,
+    "dataforseo": ingest_dataforseo,
+    "justoneapi": ingest_justoneapi,
+    "openrouter": ingest_openrouter,
+    "replicate": ingest_replicate,
+}
 
 
 # =============================================================================================

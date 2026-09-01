@@ -236,6 +236,14 @@ Bare **`treg connections`** now lists (the subparser is `required=False` with a 
   `--query` (consumed — dropped from the relayed query via `relay(drop_params=…)`). Members restricted
   via `--tools` get no marketplace calls; a bare provider name (`call tikhub /path`) still 404s but
   points at the endpoint-id form. See [cli-audit-2026-07-28](cli-audit-2026-07-28.md) (design section).
+  `-p` is a short alias for `--query`. `--await [--timeout 900]` reads `X-Treg-Async`; without the
+  header it is a no-op. With the header it prints the task id and a resumable `treg call` command to
+  stderr, polls static catalog ids or allow-listed dynamic URLs through `/call/`, retries network/5xx
+  failures with backoff up to five consecutive failures, and keeps waiting on unknown status values
+  after one warning. Stdout contains only the terminal polling response bytes. Exit codes are 0 for
+  success, 2 for a provider terminal failure, 3 for timeout/interruption/recoverable polling failure,
+  and 1 for malformed usage or metadata. Fetch-mode results print a retrieval command rather than
+  downloading binary content; result URLs, reservations, progress, and TTL reminders stay on stderr.
 - **`audit`** (`cmd_audit`, `--limit`, `--calls` | `--runs`) — the single "who did what" view. `--calls`
   and `--runs` delegate to `cmd_calls` / `cmd_runs` verbatim (the old `treg calls` / `treg runs` output,
   byte for byte). The **default merged view** is the only new behaviour in the consolidation: it fetches

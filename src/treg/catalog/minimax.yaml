@@ -1,0 +1,157 @@
+provider: minimax
+source:
+  docs: https://platform.minimax.io/docs/api-reference/api-overview
+  curated: 2026-09-01
+pricing_url: https://platform.minimax.io/docs/guides/pricing-paygo
+limits: "Video generation is asynchronous; poll every 10 seconds. Generated download URLs expire after about 9 hours."
+async:
+  id_from: task_id
+  poll:
+    endpoint: minimax.video-gen.task.status
+    param: {queryParams: task_id}
+  status:
+    path: status
+    success: [Success]
+    failure: [Fail]
+  result:
+    fetch: minimax.video-gen.file.retrieve
+    fetch_param: {queryParams: file_id}
+    ttl_note: "9h"
+  interval: 10
+endpoints:
+  - id: minimax.video-gen.from_text
+    capability: video-gen.from_text
+    platform: video-gen
+    scope: any_account
+    method: POST
+    path: /v1/video_generation
+    name: "Generate a Hailuo video from text"
+    summary: "Create a Hailuo video generation task from a text prompt."
+    input:
+      body:
+        model: {type: string, required: true, example: MiniMax-Hailuo-2.3-Fast}
+        prompt: {type: string, required: true, example: "A paper boat drifts across a quiet pond at sunrise."}
+        duration: {type: integer, required: false, default: 6, min: 6, max: 10, example: 6}
+        resolution: {type: string, required: false, default: 768P, example: 768P}
+        prompt_optimizer: {type: boolean, required: false, default: true}
+      bodyType: json
+    test_request:
+      body: {model: MiniMax-Hailuo-2.3-Fast, prompt: "A paper boat drifts across a quiet pond at sunrise.", duration: 6, resolution: 768P}
+    cost: &hailuo_cost
+      type: per_success
+      table:
+        - {when: {model: MiniMax-Hailuo-02, resolution: 512P, duration: 6}, value: 0.10}
+        - {when: {model: MiniMax-Hailuo-02, resolution: 512P, duration: 10}, value: 0.15}
+        - {when: {model: MiniMax-Hailuo-02, resolution: 768P, duration: 6}, value: 0.28}
+        - {when: {model: MiniMax-Hailuo-02, resolution: 768P, duration: 10}, value: 0.56}
+        - {when: {model: MiniMax-Hailuo-02, resolution: 1080P, duration: 6}, value: 0.49}
+        - {when: {model: MiniMax-Hailuo-2.3, resolution: 768P, duration: 6}, value: 0.28}
+        - {when: {model: MiniMax-Hailuo-2.3, resolution: 768P, duration: 10}, value: 0.56}
+        - {when: {model: MiniMax-Hailuo-2.3, resolution: 1080P, duration: 6}, value: 0.49}
+        - {when: {model: MiniMax-Hailuo-2.3-Fast, resolution: 768P, duration: 6}, value: 0.19}
+        - {when: {model: MiniMax-Hailuo-2.3-Fast, resolution: 768P, duration: 10}, value: 0.32}
+        - {when: {model: MiniMax-Hailuo-2.3-Fast, resolution: 1080P, duration: 6}, value: 0.33}
+      fallback: {value: 0.56, note: "The highest documented Hailuo combination is a 10-second 768P video; unmatched combinations reserve this explicit upper bound."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://platform.minimax.io/docs/guides/pricing-paygo#video
+      checked: 2026-09-01
+      confidence: documented
+      note: "MiniMax charges only successful Hailuo video generations."
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
+
+  - id: minimax.video-gen.from_image
+    capability: video-gen.from_image
+    platform: video-gen
+    scope: any_account
+    method: POST
+    path: /v1/video_generation
+    name: "Generate a Hailuo video from an image"
+    summary: "Animate a source image with a Hailuo video model and an optional prompt."
+    input:
+      body:
+        model: {type: string, required: true, example: MiniMax-Hailuo-02}
+        first_frame_image: {type: string, required: true, example: "https://example.com/source.png"}
+        prompt: {type: string, required: false, example: "The camera slowly pulls back."}
+        duration: {type: integer, required: false, default: 6, min: 6, max: 10, example: 6}
+        resolution: {type: string, required: false, default: 768P, example: 512P}
+        prompt_optimizer: {type: boolean, required: false, default: true}
+      bodyType: json
+    test_request:
+      body: {model: MiniMax-Hailuo-02, first_frame_image: "https://picsum.photos/seed/treg-aigc/512/512", prompt: "The camera slowly pulls back.", duration: 6, resolution: 512P}
+    cost: *hailuo_cost
+    verified: 2026-09-01
+    example_response: examples/minimax.video-gen.from_image.json
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-i2v
+
+  - id: minimax.video-gen.task.status
+    kind: utility
+    capability: video-gen.task.status
+    platform: video-gen
+    scope: any_account
+    method: GET
+    path: /v1/query/video_generation
+    name: "Check a Hailuo video task"
+    summary: "Read the current status and generated file ID for a Hailuo video task."
+    async: false
+    input:
+      queryParams:
+        task_id: {type: string, required: true, example: "106916112212032"}
+    test_request: {queryParams: {task_id: "437021055357229"}}
+    cost: {type: free, value: 0, currency: USD, unit: call, note: "Task status checks are free."}
+    verified: 2026-09-01
+    example_response: examples/minimax.video-gen.task.status.json
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-query
+
+  - id: minimax.video-gen.file.retrieve
+    kind: utility
+    capability: video-gen.task.status
+    platform: video-gen
+    scope: any_account
+    method: GET
+    path: /v1/files/retrieve
+    name: "Retrieve a generated Hailuo file"
+    summary: "Exchange a successful video task's file ID for its temporary download URL."
+    async: false
+    input:
+      queryParams:
+        file_id: {type: string, required: true, example: "176844028768320"}
+    test_request: {queryParams: {file_id: "437019583025452"}}
+    cost: {type: free, value: 0, currency: USD, unit: call, note: "Generated file metadata retrieval is free."}
+    verified: 2026-09-01
+    example_response: examples/minimax.video-gen.file.retrieve.json
+    docs_url: https://platform.minimax.io/docs/api-reference/file-management-retrieve
+
+  - id: minimax.image-gen.from_text
+    capability: image-gen.from_text
+    platform: image-gen
+    scope: any_account
+    method: POST
+    path: /v1/image_generation
+    name: "Generate images with image-01"
+    summary: "Generate one or more images synchronously from a text prompt."
+    async: false
+    input:
+      body:
+        model: {type: string, required: false, default: image-01, example: image-01}
+        prompt: {type: string, required: true, example: "A clean editorial illustration of a paper airplane."}
+        aspect_ratio: {type: string, required: false, default: "1:1", example: "1:1"}
+        response_format: {type: string, required: false, default: url, example: url}
+        n: {type: integer, required: false, default: 1, min: 1, max: 9, example: 1}
+      bodyType: json
+    test_request:
+      body: {model: image-01, prompt: "A clean editorial illustration of a paper airplane.", aspect_ratio: "1:1", response_format: url, n: 1}
+    cost:
+      type: per_success
+      table:
+        - {when: {model: image-01}, value: 0.0035, times: n}
+      fallback: {value: 0.0315, note: "Nine image-01 outputs at the documented per-image rate are the explicit request maximum."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://platform.minimax.io/docs/guides/pricing-paygo#image
+      checked: 2026-09-01
+      confidence: documented
+      note: "Price is per generated image."
+    docs_url: https://platform.minimax.io/docs/api-reference/image-generation-t2i

@@ -2253,6 +2253,132 @@ def cmd_tool_update(args, cfg) -> None:
 
 
 # ---- call + audit -------------------------------------------------------------------------
+def _json_path(document, path: str):
+    value = document
+    for part in str(path).split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return None
+    return value
+
+
+def _async_param(rule: dict) -> tuple[str, str]:
+    location, name = next(iter(rule.items()))
+    return str(location), str(name)
+
+
+def _clock_report(clock, message: str) -> None:
+    reporter = getattr(clock, "report", None)
+    if reporter is not None:
+        reporter(message)
+
+
+class _CliAwaitClock:
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def report(self, message: str) -> None:
+        print(message, file=sys.stderr)
+
+
+def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, clock,
+                     timeout: float) -> dict:
+    """Follow one async descriptor using injected HTTP and clock functions."""
+    try:
+        submitted = submission.json()
+    except ValueError:
+        return {"code": 1, "error": "the async submission response is not JSON"}
+    task_id = _json_path(submitted, descriptor.get("id_from", ""))
+    if task_id in (None, ""):
+        return {"code": 1, "error": f"the submission response has no {descriptor.get('id_from')!r}"}
+    poll = descriptor["poll"]
+    if poll.get("endpoint"):
+        _, param_name = _async_param(poll["param"])
+        target = poll["endpoint"]
+        params = [(param_name, str(task_id))]
+        recovery = f"treg call {target} -p {shlex.quote(param_name + '=' + str(task_id))}"
+    else:
+        target = _json_path(submitted, poll["url_from"])
+        if not isinstance(target, str) or not target:
+            return {"code": 1, "error": f"the submission response has no {poll['url_from']!r}"}
+        if (urlsplit(target).hostname or "").lower() not in {str(h).lower() for h in poll["url_hosts"]}:
+            return {"code": 1, "error": "the async polling URL host is not allow-listed"}
+        params = []
+        recovery = f"treg call {shlex.quote(target)}"
+
+    interval = float(descriptor.get("interval") or 10)
+    start = clock.monotonic()
+    failures = 0
+    warned: set[str] = set()
+    while True:
+        if clock.monotonic() - start >= timeout:
+            return {"code": 3, "task_id": str(task_id), "recovery": recovery,
+                    "error": "timed out while waiting for the async task"}
+        clock.sleep(interval if failures == 0 else min(60.0, interval * (2 ** (failures - 1))))
+        try:
+            response = call_fn(target, params)
+        except (httpx.RequestError, OSError) as exc:
+            failures += 1
+            _clock_report(clock, f"async poll retry {failures}/5 after a network error: {exc}")
+            if failures >= 5:
+                return {"code": 3, "task_id": str(task_id), "recovery": recovery,
+                        "error": f"polling failed five consecutive times: {exc}"}
+            continue
+        if response.status_code >= 500:
+            failures += 1
+            _clock_report(clock, f"async poll retry {failures}/5 after HTTP {response.status_code}")
+            if failures >= 5:
+                return {"code": 3, "task_id": str(task_id), "recovery": recovery,
+                        "error": f"polling returned {response.status_code} five consecutive times"}
+            continue
+        if response.status_code >= 400:
+            return {"code": 3, "task_id": str(task_id), "recovery": recovery,
+                    "error": f"polling returned HTTP {response.status_code}"}
+        failures = 0
+        try:
+            terminal = response.json()
+        except ValueError:
+            return {"code": 3, "task_id": str(task_id), "recovery": recovery,
+                    "error": "a polling response was not JSON"}
+        status = str(_json_path(terminal, descriptor["status"]["path"]))
+        if status in {str(v) for v in descriptor["status"]["success"]}:
+            result = {"code": 0, "task_id": str(task_id), "recovery": recovery,
+                      "response": response, "status": status}
+            result_rule = descriptor["result"]
+            if result_rule.get("path"):
+                result["result"] = _json_path(terminal, result_rule["path"])
+            else:
+                _, fetch_name = _async_param(result_rule["fetch_param"])
+                fetch_value = _json_path(terminal, fetch_name)
+                if fetch_value in (None, ""):
+                    fetch_value = task_id
+                result["fetch_command"] = (
+                    f"treg call {result_rule['fetch']} -p "
+                    f"{shlex.quote(fetch_name + '=' + str(fetch_value))}"
+                )
+            if result_rule.get("ttl_note"):
+                result["ttl_note"] = str(result_rule["ttl_note"])
+            return result
+        if status in {str(v) for v in descriptor["status"]["failure"]}:
+            return {"code": 2, "task_id": str(task_id), "recovery": recovery,
+                    "response": response, "status": status}
+        if status not in warned:
+            warned.add(status)
+            _clock_report(clock, f"warning: unknown async status {status!r}; continuing to wait")
+        _clock_report(clock, f"async task {task_id}: {status} ({int(clock.monotonic() - start)}s elapsed)")
+
+
+def _print_raw_response(response: httpx.Response) -> None:
+    sys.stdout.write(response.text)
+    sys.stdout.flush()
+
+
 def cmd_call(args, cfg) -> None:
     for kv in args.query:  # a token without '=' would crash dict()/split with an opaque traceback
         if "=" not in kv:
@@ -2324,7 +2450,62 @@ def cmd_call(args, cfg) -> None:
     # `treg call <id> --data …` just work beats asking the caller to repeat what the catalog knows.
     method = args.method or ("POST" if content is not None else "GET")
     with _client(cfg) as c:
-        _show(c.request(method, f"/call/{rest}", params=params, content=content, headers=headers))
+        submission = c.request(method, f"/call/{rest}", params=params, content=content, headers=headers)
+        if not getattr(args, "await_task", False) or not submission.headers.get("X-Treg-Async"):
+            _show(submission)
+            return
+        if submission.status_code >= 400:
+            _show(submission)
+            return
+        try:
+            descriptor = json.loads(submission.headers["X-Treg-Async"])
+        except (TypeError, ValueError):
+            sys.exit("treg: X-Treg-Async is not valid JSON")
+
+        def call_fn(target, poll_params):
+            # Dynamic poll URLs still travel THROUGH treg. Calling the absolute upstream URL from
+            # the CLI would bypass server-side credential injection and the host safety check.
+            return c.get(f"/call/{target}", params=poll_params)
+
+        submitted = submission.json()
+        task_id = _json_path(submitted, descriptor.get("id_from", ""))
+        poll = descriptor.get("poll") or {}
+        if poll.get("endpoint") and task_id not in (None, ""):
+            _, resume_name = _async_param(poll["param"])
+            recovery = f"treg call {poll['endpoint']} -p {shlex.quote(resume_name + '=' + str(task_id))}"
+        elif poll.get("url_from"):
+            recovery = f"treg call {shlex.quote(str(_json_path(submitted, poll['url_from']) or ''))}"
+        else:
+            recovery = ""
+        if task_id not in (None, ""):
+            print(f"async task submitted: {task_id}", file=sys.stderr)
+            if recovery:
+                print(f"resume: {recovery}", file=sys.stderr)
+        if reserved := submission.headers.get("X-Treg-Cost-Micro"):
+            print(f"generation reservation: ${int(reserved) / 1_000_000:g}", file=sys.stderr)
+        try:
+            outcome = await_async_task(
+                descriptor, submission, call_fn, _CliAwaitClock(), getattr(args, "timeout", None)
+            )
+        except KeyboardInterrupt:
+            print("treg: waiting interrupted; the upstream task is still recoverable", file=sys.stderr)
+            if recovery:
+                print(f"resume: {recovery}", file=sys.stderr)
+            raise SystemExit(3) from None
+        response = outcome.get("response")
+        if response is not None:
+            _print_raw_response(response)
+        if outcome.get("result") not in (None, ""):
+            value = outcome["result"]
+            rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
+            print(f"result: {rendered}", file=sys.stderr)
+        if outcome.get("fetch_command"):
+            print(f"retrieve: {outcome['fetch_command']}", file=sys.stderr)
+        if outcome.get("ttl_note"):
+            print(f"download promptly; result lifetime: {outcome['ttl_note']}", file=sys.stderr)
+        if outcome.get("error"):
+            print(f"treg: {outcome['error']}", file=sys.stderr)
+        raise SystemExit(outcome["code"])
 
 
 def cmd_calls(args, cfg) -> None:
@@ -5348,7 +5529,7 @@ def build_parser() -> argparse.ArgumentParser:
     cl.add_argument("path", nargs="?", default="", help="the path when using a tool name")
     cl.add_argument("--method", default=None,
                     help="HTTP method (default: GET, or POST when --data/--file/--upload is given)")
-    cl.add_argument("--query", action="append", default=[], metavar="K=V", help="a query param (repeatable)")
+    cl.add_argument("-p", "--query", action="append", default=[], metavar="K=V", help="a query param (repeatable)")
     cl.add_argument("--data", help="request body (string)"); cl.add_argument("--file", help="request body from a file")
     cl.add_argument("--content-type", dest="content_type", metavar="TYPE",
                     help="Content-Type for the body (default: sniffed — a body that parses as JSON sends application/json)")
@@ -5359,6 +5540,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="a multipart/form-data part (repeatable): NAME=@/path/to/file for a file, or "
                          "NAME=value for a plain field. Use for real file uploads (e.g. Meta adimages) — "
                          "--file sends a single raw body that most upload APIs reject.")
+    cl.add_argument("--await", dest="await_task", action="store_true",
+                    help="wait for an async catalog call to reach a terminal state")
+    cl.add_argument("--timeout", type=float, default=900,
+                    help="maximum seconds to wait with --await (default: 900)")
     cl.set_defaults(fn=cmd_call)
 
     # ---- audit (one log over both halves; `calls`/`runs` live on as hidden aliases) ----

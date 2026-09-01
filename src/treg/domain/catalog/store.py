@@ -220,6 +220,10 @@ def merge_async_descriptor(default: object, override: object = None) -> object:
     keys of the other mode. Invalid non-mapping values are deliberately preserved for the catalog
     validator to reject instead of being silently normalised away.
     """
+    # Utility endpoints can share a provider file with async submission rows. ``false`` is the
+    # explicit opt-out from a provider-wide default; absence still means inherit.
+    if override is False:
+        return None
     if default is None:
         return override
     if override is None:

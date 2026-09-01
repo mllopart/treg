@@ -165,9 +165,22 @@ def _input_fields(input_schema: object) -> dict[str, dict]:
             continue
         if isinstance(block.get("properties"), dict):
             block = block["properties"]
+        def add_fields(items: dict, prefix: str = "") -> None:
+            for name, spec in items.items():
+                if not isinstance(spec, dict):
+                    continue
+                field = f"{prefix}.{name}" if prefix else str(name)
+                fields.setdefault(field, spec)
+                nested = spec.get("properties")
+                if isinstance(nested, dict):
+                    add_fields(nested, field)
+
         for name, spec in block.items():
             if isinstance(spec, dict):
                 fields.setdefault(str(name), spec)
+                nested = spec.get("properties")
+                if isinstance(nested, dict):
+                    add_fields(nested, str(name))
     return fields
 
 
@@ -570,7 +583,7 @@ def main(argv: list[str]) -> int:
     # `dataset_id`, GAQL's query body), so a core/extended path collision is legitimate THERE and
     # only there. Everywhere else it is the ingest-dedup failure that shipped 27 duplicate rows
     # (dataforseo via the /v3 prefix mismatch, scrapecreators via core being curated after ingest).
-    PARAM_MULTIPLEXED = {"serpapi", "brightdata", "google-ads"}
+    PARAM_MULTIPLEXED = {"serpapi", "brightdata", "google-ads", "minimax", "openrouter"}
     route_tiers: dict[tuple, dict[str, list[str]]] = {}
     for path in files:
         name = path.name

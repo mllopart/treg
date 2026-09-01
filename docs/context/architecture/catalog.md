@@ -54,12 +54,23 @@ sources:
   - src/treg/catalog/google-tag-manager.yaml
   - src/treg/catalog/google-tag-manager.extended.yaml
   - src/treg/catalog/justoneapi.extended.yaml
+  - src/treg/catalog/minimax.yaml
+  - src/treg/catalog/examples/minimax.video-gen.file.retrieve.json
+  - src/treg/catalog/examples/minimax.video-gen.from_image.json
+  - src/treg/catalog/examples/minimax.video-gen.task.status.json
+  - src/treg/catalog/openrouter.yaml
+  - src/treg/catalog/openrouter.extended.yaml
+  - src/treg/catalog/examples/openrouter.x.alibaba-wan-3-0.json
+  - src/treg/catalog/replicate.yaml
+  - src/treg/catalog/replicate.extended.yaml
+  - src/treg/catalog/examples/replicate.image-gen.flux-schnell.json
   - src/treg/catalog/tikhub.extended.yaml
   - src/treg/domain/catalog/__init__.py
   - src/treg/domain/catalog/store.py
   - src/treg/domain/catalog/stats.py
   - src/treg/infra/catalog_observations.py
   - src/treg/routers/catalog.py
+  - tests/test_aigc_pr_b.py
 related:
   - architecture/money.md
   - architecture/proxy-model.md
@@ -293,8 +304,8 @@ An asynchronous submission endpoint may carry an `async:` descriptor. A provider
 same block at top level as a default for every endpoint in that file; an endpoint block recursively
 overrides individual fields. Selecting `poll.endpoint` versus `poll.url_from`, or `result.path`
 versus `result.fetch`, replaces the inherited mode and its companion fields. `catalog_store` serves
-the complete effective descriptor on the normalized endpoint; this contract stage does not poll,
-relay, or settle a task.
+the complete effective descriptor on the normalized endpoint. An explicit endpoint `async: false`
+opts a utility or synchronous endpoint out of the provider default; absence means inherit.
 
 ```yaml
 async:
@@ -323,7 +334,18 @@ failure are non-empty, disjoint lists; `interval` is positive; poll has exactly 
 or `url_from`; result has exactly one of `path` or `fetch`. Static poll/fetch ids must exist under
 the same provider and carry their parameter mapping. Dynamic URLs require a non-empty `url_hosts`
 allow-list. Any endpoint with `async:` must use `cost.type: per_success`. The descriptor is metadata
-beside the faithful relay: it never changes provider-native parameters or response bodies.
+beside the faithful relay: it never changes provider-native parameters or response bodies. The call
+router serializes the effective descriptor into `X-Treg-Async` before the response stream starts;
+it does not inspect or buffer the upstream body.
+
+OpenRouter ingest reads `/api/v1/videos/models`, emits one extended row per model on the shared
+`POST /videos` route, and converts duration-based `pricing_skus` into reserve tables with
+`rate_card_api` provenance. Token-priced SKUs preserve the live rate card but remain explicitly
+unknown/BYOK-only because the directory does not expose a safe request-to-token upper bound.
+Replicate ingest joins the official text-to-image, text-to-video, and image-to-video collections;
+each generated row takes its request fields from `latest_version.openapi_schema`. Its generated
+prices are explicitly unknown, while the curated core rows carry per-model page provenance. Both
+ingesters sort their inputs and produce byte-identical output when upstream data is unchanged.
 
 ### `<service>.extended.yaml`
 

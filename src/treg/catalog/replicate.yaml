@@ -1,0 +1,134 @@
+provider: replicate
+source:
+  docs: https://replicate.com/docs/topics/models/official-models
+  curated: 2026-09-01
+pricing_url: https://replicate.com/pricing
+limits: "Predictions are asynchronous by default. Output files should be copied before Replicate removes prediction data."
+async:
+  id_from: id
+  poll:
+    url_from: urls.get
+    url_hosts: [api.replicate.com]
+  status:
+    path: status
+    success: [succeeded]
+    failure: [failed, canceled]
+  result:
+    path: output
+  interval: 2
+endpoints:
+  - id: replicate.image-gen.flux-schnell
+    capability: image-gen.from_text
+    platform: image-gen
+    scope: any_account
+    method: POST
+    path: /models/black-forest-labs/flux-schnell/predictions
+    name: "Generate images with FLUX Schnell"
+    summary: "Generate up to four images quickly from a text prompt with the official FLUX Schnell model."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A small red kite above a calm beach."}
+            num_outputs: {type: integer, required: false, default: 1, min: 1, max: 4, example: 1}
+            aspect_ratio: {type: string, required: false, default: "1:1", example: "1:1"}
+            output_format: {type: string, required: false, default: webp, example: webp}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A small red kite above a calm beach.", num_outputs: 1, aspect_ratio: "1:1", output_format: webp}}
+    cost:
+      type: per_success
+      table:
+        - {when: {input.num_outputs: 1}, value: 0.003}
+        - {when: {input.num_outputs: 2}, value: 0.006}
+        - {when: {input.num_outputs: 3}, value: 0.009}
+        - {when: {input.num_outputs: 4}, value: 0.012}
+      fallback: {value: 0.012, note: "Four outputs at $0.003 each are the explicit request maximum."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/black-forest-labs/flux-schnell
+      checked: 2026-09-01
+      confidence: documented
+      note: "Replicate lists FLUX Schnell at $3 per thousand output images."
+    verified: 2026-09-01
+    example_response: examples/replicate.image-gen.flux-schnell.json
+    docs_url: https://replicate.com/black-forest-labs/flux-schnell/api
+
+  - id: replicate.video-gen.seedance-1-lite
+    capability: video-gen.from_text
+    platform: video-gen
+    scope: any_account
+    method: POST
+    path: /models/bytedance/seedance-1-lite/predictions
+    name: "Generate video with Seedance 1 Lite"
+    summary: "Generate a 480P, 720P, or 1080P video from text or a starting image."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A paper boat crosses a quiet pond."}
+            image: {type: string, required: false, example: "https://example.com/source.png"}
+            duration: {type: integer, required: false, default: 5, min: 4, max: 12, example: 4}
+            resolution: {type: string, required: false, default: 720p, example: 480p}
+            aspect_ratio: {type: string, required: false, default: "16:9", example: "16:9"}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A paper boat crosses a quiet pond.", duration: 4, resolution: 480p, aspect_ratio: "16:9"}}
+    cost:
+      type: per_success
+      table:
+        - {when: {input.resolution: 480p}, value: 0.018, times: input.duration}
+        - {when: {input.resolution: 720p}, value: 0.036, times: input.duration}
+        - {when: {input.resolution: 1080p}, value: 0.072, times: input.duration}
+      fallback: {value: 0.864, note: "Twelve seconds at the highest documented 1080P rate is the explicit request maximum."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/bytedance/seedance-1-lite
+      checked: 2026-09-01
+      confidence: documented
+      note: "Replicate charges per second of output video, with a resolution-specific rate."
+    docs_url: https://replicate.com/bytedance/seedance-1-lite/api
+
+  - id: replicate.video-gen.veo-3.1-fast
+    capability: video-gen.from_text
+    platform: video-gen
+    scope: any_account
+    method: POST
+    path: /models/google/veo-3.1-fast/predictions
+    name: "Generate video with Veo 3.1 Fast"
+    summary: "Generate a short video from text or an image, with optional synchronized audio."
+    input:
+      body:
+        input:
+          type: object
+          required: true
+          properties:
+            prompt: {type: string, required: true, example: "A paper boat crosses a quiet pond."}
+            image: {type: string, required: false, example: "https://example.com/source.png"}
+            duration: {type: integer, required: false, default: 8, min: 4, max: 8, example: 4}
+            resolution: {type: string, required: false, default: 1080p, example: 720p}
+            aspect_ratio: {type: string, required: false, default: "16:9", example: "16:9"}
+            generate_audio: {type: boolean, required: false, default: true, example: false}
+      bodyType: json
+    test_request:
+      body: {input: {prompt: "A paper boat crosses a quiet pond.", duration: 4, resolution: 720p, aspect_ratio: "16:9", generate_audio: false}}
+    cost:
+      type: per_success
+      table:
+        - {when: {input.generate_audio: false}, value: 0.10, times: input.duration}
+        - {when: {input.generate_audio: true}, value: 0.15, times: input.duration}
+      fallback: {value: 1.20, note: "Eight seconds with audio at $0.15 per second is the explicit request maximum."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://replicate.com/google/veo-3.1-fast
+      checked: 2026-09-01
+      confidence: documented
+      note: "Replicate charges $0.10 per second without audio and $0.15 per second with audio."
+    docs_url: https://replicate.com/google/veo-3.1-fast/api

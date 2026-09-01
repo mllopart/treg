@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -80,6 +81,22 @@ def _http_upstream_response(upstream: UpstreamResponse) -> StreamingResponse:
     )
     response.raw_headers = list(upstream.raw_headers)
     return response
+
+
+def _attach_async_descriptor(upstream: UpstreamResponse, context) -> None:
+    """Attach static catalog metadata before Starlette starts the upstream body stream."""
+    marketplace = context.marketplace
+    if marketplace is None:
+        return
+    endpoint = catalog_store.load().by_id.get(marketplace.endpoint_id)
+    descriptor = endpoint.get("async") if endpoint else None
+    if not descriptor:
+        return
+    value = json.dumps(descriptor, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    upstream.raw_headers = tuple(
+        (name, existing) for name, existing in upstream.raw_headers
+        if name.lower() != b"x-treg-async"
+    ) + ((b"x-treg-async", value),)
 
 
 def _require_tool_use_http(caller: Caller, tool: Tool) -> None:
@@ -295,7 +312,9 @@ async def call_tool(
         raise _translate_call_failure(exc) from exc
     request.state.call_ref = context.call_ref
     try:
-        return _http_upstream_response(await execute_call(context, request.app.state.http))
+        upstream = await execute_call(context, request.app.state.http)
+        _attach_async_descriptor(upstream, context)
+        return _http_upstream_response(upstream)
     except CallFailure as exc:
         raise _translate_call_failure(exc) from exc
     finally:

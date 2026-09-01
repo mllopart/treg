@@ -647,6 +647,11 @@ validated before resolving the shared HTTP client. `/auth/logout` remains an HTT
   credential ladder onward it delegates to `call_tool`, retaining provider/user credentials, ACLs,
   deny rules, caps, metering, audit, idempotency and faithful relay.
 
+  A resolved catalog endpoint with an async descriptor adds one treg-owned response header:
+  `X-Treg-Async`, containing compact JSON for the already-known effective descriptor. The router
+  attaches it after catalog resolution and before Starlette begins streaming; no provider response
+  bytes are read, parsed, or rewritten.
+
 ## Schemas
 Pydantic input models: `UserIn`, `OrgIn` / `InviteIn` / `AcceptIn`, `EmailStartIn` / `EmailVerifyIn`,
 `SecretIn` / `SecretUpdate`,
