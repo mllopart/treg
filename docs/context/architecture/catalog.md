@@ -332,6 +332,20 @@ against v1), so a field-wise merge only produced descriptors nobody had written 
 serves the effective descriptor on the normalized endpoint. An explicit endpoint `async: false` opts
 a utility or synchronous endpoint out of the provider default; absence means inherit.
 
+**Poll mode in practice.** Every listed provider polls a static catalog id (`poll.endpoint`), which
+the CLI reaches through `/call/<id>` on any credential tier. Replicate offers both `urls.get` and the
+stable `GET /v1/predictions/{id}`; the static form is listed (`replicate.predictions.get`) because a
+`--await` that polled the absolute URL through `/call/https://…` was refused for a team on treg's
+key — that path resolves only a team's own tool (sample run, 2026-09-02). The dynamic-URL mode
+(`poll.url_from` + `url_hosts`) stays in the schema, validator and worker for a provider that offers
+nothing else (BFL), but today it works only for BYOK teams; serving it on the platform key needs a
+host-allow-listed relay that is not built. Do not document it as available.
+
+**Envelope errors.** A submission endpoint may carry `expect` (the provider-wide or per-endpoint
+success rule already used by settle); `application.call.service._submission_accepted` gates
+deferral on it, so MiniMax's HTTP-200-with-`base_resp.status_code: 2013` releases at once instead of
+becoming a task nobody can poll.
+
 ```yaml
 async:
   id_from: task_id

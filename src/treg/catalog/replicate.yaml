@@ -21,12 +21,15 @@ proposed_capabilities:
   # standalone in the model wall; job-level comparisons stay empty until models are hand-picked.
   image-gen.flux-schnell.from_text: "Generate images with FLUX Schnell"
   video-gen.seedance-1-lite.from_text: "Generate a Seedance 1 Lite video from text or an image"
-  video-gen.veo-3-1-fast.from_image: "Generate a Veo 3.1 Fast video from text or an image"
+  video-gen.veo-3-1-fast.generate: "Generate a Veo 3.1 Fast video from text, optionally from a starting image"
+# Replicate answers a submission with both a dynamic `urls.get` and the stable official path
+# `GET /v1/predictions/{id}`; the static form is used so the CLI polls a catalog id (served on any
+# credential tier) rather than an absolute URL, which the relay only accepts for a team's own tool.
 async:
   id_from: id
   poll:
-    url_from: urls.get
-    url_hosts: [api.replicate.com]
+    endpoint: replicate.predictions.get
+    param: {in: pathParams, name: id}
   status:
     path: status
     success: [succeeded]
@@ -116,7 +119,7 @@ endpoints:
     docs_url: https://replicate.com/bytedance/seedance-1-lite/api
 
   - id: replicate.video-gen.veo-3.1-fast
-    capability: video-gen.veo-3-1-fast.from_image
+    capability: video-gen.veo-3-1-fast.generate
     platform: video-gen
     domain: models
     scope: any_account
@@ -138,7 +141,7 @@ endpoints:
             generate_audio: {type: boolean, required: false, default: true, example: false}
       bodyType: json
     test_request:
-      body: {input: {prompt: "Bring the scene to life with a slow camera push.", image: "https://example.com/source.png", duration: 4, resolution: 720p, aspect_ratio: "16:9", generate_audio: false}}
+      body: {input: {prompt: "A paper boat crosses a quiet pond.", duration: 4, resolution: 720p, aspect_ratio: "16:9", generate_audio: false}}
     cost:
       type: per_success
       table:
@@ -153,3 +156,22 @@ endpoints:
       confidence: documented
       note: "Replicate charges $0.10 per second without audio and $0.15 per second with audio."
     docs_url: https://replicate.com/google/veo-3.1-fast/api
+
+  - id: replicate.predictions.get
+    kind: utility
+    capability: video-gen.task.status
+    platform: video-gen
+    scope: any_account
+    method: GET
+    path: /predictions/{id}
+    name: "Check a Replicate prediction"
+    summary: "Read a prediction's status; a succeeded prediction carries its output URL(s) in `output`. Copy outputs promptly: Replicate removes prediction data after a retention window."
+    async: false
+    input:
+      pathParams:
+        id: {type: string, required: true, example: "j5swnw9ghhrzw0d0c3csppxamg"}
+    test_request: {pathParams: {id: "j5swnw9ghhrzw0d0c3csppxamg"}}
+    cost: {type: free, value: 0, currency: USD, unit: call, note: "Prediction status checks are free."}
+    verified: 2026-09-02
+    example_response: examples/replicate.predictions.get.json
+    docs_url: https://replicate.com/docs/reference/http#predictions.get

@@ -180,7 +180,10 @@ an ERROR-level alert: an outcome nobody observed is the platform's cost, never t
 provider that silently changed its status field shows up as absorbed timeouts in
 `reconcile.async_task_settlement` (`absorbed_timeouts`) rather than as a quiet overcharge.
 Extraction failure at submission is the same shape: the row carries the error and reaches that
-deadline untouched. The only usage unit real traffic has settled is `usd` (OpenRouter's
+deadline untouched. When the pending row itself cannot be persisted, the request path releases the
+hold with reason `async_task_not_recorded` and logs an ERROR alert — the same doctrine, since nobody
+will observe that task's outcome. A 2xx whose envelope fails the endpoint's `expect` rule is not a
+task at all and releases through the ordinary response-time path. The only usage unit real traffic has settled is `usd` (OpenRouter's
 `usage.cost`); a token unit returns with the first metered token-priced listing, together with its fx
 rule and a live test. Ledger writes remain exclusively through `domain/money`.
 

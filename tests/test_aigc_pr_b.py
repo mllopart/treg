@@ -57,7 +57,8 @@ def test_catalog_loads_provider_defaults_and_utility_opt_out():
     status = cat.by_id["minimax.video-gen.task.status"]
     assert submit["async"]["poll"]["endpoint"] == status["id"]
     assert status["async"] is None
-    assert cat.by_id["replicate.image-gen.flux-schnell"]["async"]["poll"]["url_from"] == "urls.get"
+    replicate = cat.by_id["replicate.image-gen.flux-schnell"]["async"]["poll"]
+    assert replicate == {"endpoint": "replicate.predictions.get", "param": {"in": "pathParams", "name": "id"}}
 
 
 def test_async_wait_succeeds_after_unknown_status_and_warns_once():

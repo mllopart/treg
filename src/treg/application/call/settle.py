@@ -415,8 +415,11 @@ async def _platform_settle(
     # not billable to the caller because the aggregator's prepaid account still incurred the cost.
     observed = ((observed_override if observed_override is not None
                  else _observed_cost_micro(mk, body, headers)) if billable else None)
-    actual = (settlement_basis.settle(
-        mk.settlement_basis, {"observed_micro": observed}) if billable else None)
+    # A provider-reported zero (an adapter miss, a failed `expect` envelope, an explicit zero
+    # charge) is a fact about THIS answer and outranks any frozen basis: a price table says what a
+    # success costs, and this was not one.
+    actual = ((0 if observed == 0 else settlement_basis.settle(
+        mk.settlement_basis, {"observed_micro": observed})) if billable else None)
     call_id, mk.call_id = mk.call_id, None  # closing is once-only, even if two paths try
     charged = 0
 

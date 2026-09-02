@@ -40,14 +40,61 @@ endpoints:
     summary: "Create a Hailuo video generation task from a text prompt."
     input:
       body:
-        model: {type: string, required: true, enum: [MiniMax-Hailuo-2.3, MiniMax-Hailuo-2.3-Fast, MiniMax-Hailuo-02], example: MiniMax-Hailuo-2.3-Fast}
+        # Live 2026-09-02 (base_resp 2013 on both): MiniMax-Hailuo-2.3-Fast "does not support
+        # Text-to-Video mode", and 512P "is only supported when param 'first_frame_image' provided".
+        # Both are image-to-video-only and live on the from_image row.
+        model: {type: string, required: true, enum: [MiniMax-Hailuo-2.3, MiniMax-Hailuo-02], example: MiniMax-Hailuo-2.3}
         prompt: {type: string, required: true, example: "A paper boat drifts across a quiet pond at sunrise."}
         duration: {type: integer, required: false, default: 6, min: 6, max: 10, example: 6}
-        resolution: {type: string, required: false, default: 768P, enum: [512P, 768P, 1080P], example: 768P, note: "512P is Hailuo-02 only; see the price table for valid model-resolution-duration combinations."}
+        resolution: {type: string, required: false, default: 768P, enum: [768P, 1080P], example: 768P, note: "1080P is 6 seconds only; see the price table for valid model-resolution-duration combinations."}
         prompt_optimizer: {type: boolean, required: false, default: true}
       bodyType: json
     test_request:
-      body: {model: MiniMax-Hailuo-2.3-Fast, prompt: "A paper boat drifts across a quiet pond at sunrise.", duration: 6, resolution: 768P}
+      body: {model: MiniMax-Hailuo-2.3, prompt: "A paper boat drifts across a quiet pond at sunrise.", duration: 6, resolution: 768P}
+    # MiniMax answers HTTP 200 with the error in the envelope (`base_resp.status_code` 2013 = invalid
+    # params). This rule makes such an answer a failure: the hold is released and no task is deferred.
+    expect: {json_path: base_resp.status_code, equals: 0}
+    cost:
+      type: per_success
+      table:
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 768P, body.duration: 6}, value: 0.28}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 768P, body.duration: 10}, value: 0.56}
+        - {when: {body.model: MiniMax-Hailuo-02, body.resolution: 1080P, body.duration: 6}, value: 0.49}
+        - {when: {body.model: MiniMax-Hailuo-2.3, body.resolution: 768P, body.duration: 6}, value: 0.28}
+        - {when: {body.model: MiniMax-Hailuo-2.3, body.resolution: 768P, body.duration: 10}, value: 0.56}
+        - {when: {body.model: MiniMax-Hailuo-2.3, body.resolution: 1080P, body.duration: 6}, value: 0.49}
+      fallback: {value: 0.56, note: "The highest documented Hailuo text-to-video combination is a 10-second 768P video; unmatched combinations reserve this explicit upper bound."}
+      currency: USD
+      settle: table
+      source: docs
+      source_url: https://platform.minimax.io/docs/guides/pricing-paygo#video
+      checked: 2026-09-01
+      confidence: documented
+    verified: 2026-09-02
+    example_response: examples/minimax.video-gen.from_text.json
+    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
+
+  - id: minimax.video-gen.from_image
+    capability: video-gen.hailuo.from_image
+    platform: video-gen
+    domain: models
+    scope: any_account
+    method: POST
+    path: /v1/video_generation
+    name: "MiniMax: Hailuo (image-to-video)"
+    summary: "Animate a first-frame image into a Hailuo video, optionally guided by a prompt."
+    input:
+      body:
+        model: {type: string, required: true, enum: [MiniMax-Hailuo-2.3, MiniMax-Hailuo-2.3-Fast, MiniMax-Hailuo-02], example: MiniMax-Hailuo-02}
+        first_frame_image: {type: string, required: true, example: "https://example.com/first-frame.png", note: "A public image URL or a data URL."}
+        prompt: {type: string, required: false, example: "The camera slowly pulls back."}
+        duration: {type: integer, required: false, default: 6, min: 6, max: 10, example: 6}
+        resolution: {type: string, required: false, default: 768P, enum: [512P, 768P, 1080P], example: 512P, note: "512P is Hailuo-02 only; see the price table for valid model-resolution-duration combinations."}
+        prompt_optimizer: {type: boolean, required: false, default: true}
+      bodyType: json
+    test_request:
+      body: {model: MiniMax-Hailuo-02, first_frame_image: "https://picsum.photos/seed/treg-aigc/512/512", prompt: "The camera slowly pulls back.", duration: 6, resolution: 512P}
+    expect: {json_path: base_resp.status_code, equals: 0}
     cost: &hailuo_cost
       type: per_success
       table:
@@ -70,29 +117,6 @@ endpoints:
       checked: 2026-09-01
       confidence: documented
       note: "MiniMax charges only successful Hailuo video generations."
-    docs_url: https://platform.minimax.io/docs/api-reference/video-generation-t2v
-
-  - id: minimax.video-gen.from_image
-    capability: video-gen.hailuo.from_image
-    platform: video-gen
-    domain: models
-    scope: any_account
-    method: POST
-    path: /v1/video_generation
-    name: "MiniMax: Hailuo (image-to-video)"
-    summary: "Animate a source image with a Hailuo video model and an optional prompt."
-    input:
-      body:
-        model: {type: string, required: true, enum: [MiniMax-Hailuo-2.3, MiniMax-Hailuo-2.3-Fast, MiniMax-Hailuo-02], example: MiniMax-Hailuo-02}
-        first_frame_image: {type: string, required: true, example: "https://example.com/source.png"}
-        prompt: {type: string, required: false, example: "The camera slowly pulls back."}
-        duration: {type: integer, required: false, default: 6, min: 6, max: 10, example: 6}
-        resolution: {type: string, required: false, default: 768P, enum: [512P, 768P, 1080P], example: 512P, note: "512P is Hailuo-02 only; see the price table for valid model-resolution-duration combinations."}
-        prompt_optimizer: {type: boolean, required: false, default: true}
-      bodyType: json
-    test_request:
-      body: {model: MiniMax-Hailuo-02, first_frame_image: "https://picsum.photos/seed/treg-aigc/512/512", prompt: "The camera slowly pulls back.", duration: 6, resolution: 512P}
-    cost: *hailuo_cost
     verified: 2026-09-01
     example_response: examples/minimax.video-gen.from_image.json
     docs_url: https://platform.minimax.io/docs/api-reference/video-generation-i2v

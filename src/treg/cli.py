@@ -2292,7 +2292,10 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
         return {"code": 1, "error": "the async submission response is not JSON"}
     task_id = _json_path(submitted, descriptor.get("id_from", ""))
     if task_id in (None, ""):
-        return {"code": 1, "error": f"the submission response has no {descriptor.get('id_from')!r}"}
+        # The provider's answer IS the diagnosis (MiniMax puts "invalid params, ..." in a 200);
+        # hand it to stdout as any other response, then say what treg could not find in it.
+        return {"code": 1, "response": submission,
+                "error": f"the submission response has no {descriptor.get('id_from')!r}"}
     poll = descriptor["poll"]
     if poll.get("endpoint"):
         _, param_name = _async_param(poll["param"])

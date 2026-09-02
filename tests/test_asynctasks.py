@@ -69,8 +69,7 @@ async def test_settle_fork_keeps_hold_and_writes_pending_row(
         row = await db.get(AsyncTaskRecord, call_id)
         hold = await db.get(Hold, call_id)
     assert row is not None and hold is not None
-    assert (row.task_id, row.poll_url, row.status) == (
-        "prediction-1", "https://api.replicate.com/v1/predictions/1", "pending")
+    assert (row.task_id, row.poll_url, row.status) == ("prediction-1", None, "pending")
     assert row.settlement_basis["when"] == "terminal"
 
 
@@ -87,7 +86,7 @@ async def test_extraction_failure_is_persisted_fail_closed(
     assert row.next_check_at - row.created_at == asynctasks.MAX_AGE
 
 
-async def test_pending_row_write_failure_closes_hold_at_frozen_price(
+async def test_pending_row_write_failure_releases_the_hold_and_alerts(
     clients: AsyncClient, monkeypatch, replicate_platform,
 ):
     async def fail_persistence(*args, **kwargs):
@@ -99,13 +98,51 @@ async def test_pending_row_write_failure_closes_hold_at_frozen_price(
         "urls": {"get": "https://api.replicate.com/v1/predictions/untracked"},
     })
     assert response.status_code == 201
+    assert response.headers["X-Treg-Cost-Micro"] == "0"
     call_id = response.headers["X-Treg-Call-Id"]
     async with session_maker() as db:
         assert await db.get(AsyncTaskRecord, call_id) is None
         assert await db.get(Hold, call_id) is None
         entry = (await db.execute(select(LedgerEntry).where(
-            LedgerEntry.call_id == call_id, LedgerEntry.kind == "settle"))).scalar_one()
-    assert entry.amount_micro == -3000
+            LedgerEntry.call_id == call_id, LedgerEntry.kind == "release"))).scalar_one()
+    # treg's own failure is treg's cost: the whole reserve goes back, nothing is settled.
+    assert entry.amount_micro == 3000
+    assert entry.meta.get("reason") == "async_task_not_recorded"
+
+
+@pytest.fixture
+def minimax_platform(monkeypatch):
+    monkeypatch.setenv("TREG_PLATFORM_KEY_MINIMAX", "test-platform-token")
+    monkeypatch.setenv("TREG_PLATFORM_PROVIDERS", "minimax")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+async def test_a_2xx_that_fails_the_expect_rule_releases_and_is_not_deferred(
+    clients: AsyncClient, monkeypatch, minimax_platform,
+):
+    """MiniMax answers HTTP 200 with the error in the envelope (live 2026-09-02: base_resp 2013,
+    "model MiniMax-Hailuo-2.3-Fast does not support Text-to-Video mode"). No task exists, so
+    nothing may be deferred and nothing may be charged."""
+    async def fake_relay(*args, **kwargs):
+        return _response(200, {"task_id": "", "base_resp": {
+            "status_code": 2013, "status_msg": "invalid params"}})
+
+    monkeypatch.setattr(call_service, "relay", fake_relay)
+    response = await clients.post("/call/minimax.video-gen.from_text", json={
+        "model": "MiniMax-Hailuo-2.3", "prompt": "A paper boat.", "duration": 6,
+        "resolution": "768P"})
+    assert response.status_code == 200
+    assert response.headers["X-Treg-Cost-Micro"] == "0"
+    call_id = response.headers["X-Treg-Call-Id"]
+    async with session_maker() as db:
+        assert await db.get(AsyncTaskRecord, call_id) is None
+        assert await db.get(Hold, call_id) is None
+        entries = {e.kind: e.amount_micro for e in (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == call_id))).scalars().all()}
+    # A failed envelope is a per_success miss: settled at zero, the whole reserve given back.
+    assert entries == {"reserve": -280000, "settle": 0}
 
 
 async def _due_submission(clients, monkeypatch, document: dict) -> str:

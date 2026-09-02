@@ -51,6 +51,7 @@ from .resolve import (
 )
 from . import overflow as overflow_cycle
 from . import route as routed
+from .settle import _dig
 from .settle import (
     _buffer_response,
     _finish_cancelled_call as finish_cancelled_call,
@@ -893,8 +894,12 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
             await _finish_cancelled_call(request, mk, call_ref, response)
             raise
     if mk is not None and mk.metered:
+        # A submission is deferred only when the provider actually accepted it: a 2xx whose
+        # envelope fails the endpoint's `expect` rule (MiniMax answers HTTP 200 with
+        # base_resp.status_code 2013 for a bad parameter) is a failure and releases now.
         deferred = bool(
-            mk.settlement_basis.get("when") == "terminal" and 200 <= response.status < 300)
+            mk.settlement_basis.get("when") == "terminal" and 200 <= response.status < 300
+            and _submission_accepted(mk, body))
         try:
             request.context.finalization = FinalizationState.FINALIZING
             if deferred:
@@ -903,13 +908,16 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
                     observed = None
                     request.context.finalization = FinalizationState.FINALIZED
                 except Exception as exc:  # noqa: BLE001 — an accepted task must never orphan a hold
-                    # Settles the frozen basis now (the table row, or the fallback for a usage
-                    # basis with no terminal evidence yet) rather than leaving a hold nobody owns.
+                    # treg could not record the task, so nobody will ever observe its outcome.
+                    # The platform absorbs that: release the hold (status None = never a charge)
+                    # and alert. Charging the basis here would bill a customer for treg's own
+                    # failure; the doctrine is the same as the 24-hour deadline's.
                     logging.getLogger("treg.asynctasks").error(
-                        "pending-row persistence failed for call %s; settling its basis now: %s",
-                        call_ref, exc, exc_info=True)
+                        "ASYNC TASK NOT RECORDED: call %s on %s accepted upstream but the pending "
+                        "row failed to persist; hold released, platform absorbs the charge: %s",
+                        call_ref, mk.endpoint_id, exc, exc_info=True)
                     charged, observed = await _platform_settle(
-                        mk, response.status, body,
+                        mk, None, body, reason="async_task_not_recorded",
                         finalized=lambda: setattr(
                             request.context, "finalization", FinalizationState.FINALIZED),
                     )
@@ -1031,3 +1039,16 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
         request.state.idem_claim = None
     _set_response_header(response, "X-Treg-Call-Id", call_ref)
     return response
+
+
+def _submission_accepted(mk, body: bytes) -> bool:
+    """Whether a 2xx submission passed the endpoint's `expect` envelope rule (True when it has none
+    or the body is not JSON: an undecidable answer defers, and the worker's 24-hour deadline then
+    releases it — never a silent charge)."""
+    rule = (catalog_store.load().by_id.get(mk.endpoint_id) or {}).get("expect")
+    if not rule:
+        return True
+    try:
+        return _dig(json.loads(body), rule["json_path"]) == rule.get("equals")
+    except (ValueError, UnicodeDecodeError, KeyError, TypeError):
+        return True
