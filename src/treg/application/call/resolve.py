@@ -999,7 +999,7 @@ async def _resolve_marketplace_call(
     upstream, consumed = _marketplace_upstream(ep, provider, query, chosen_method)
     body = await read_body() if has_body else b""
     phash = _params_hash(ep["id"], query.multi_items(), body)
-    # The catalog's estimate travels on EVERY tier — informational on tiers 1/2 (the provider bills
+    # The catalog's estimate travels on EVERY tier - informational on tiers 1/2 (the provider bills
     # the org's own account; Activity shows "estimated") and the reserve amount on tier 4 only
     # (`metered` gates the ledger, so this never charges a balance for an own-key call).
     cat = catalog_store.load()
@@ -1031,7 +1031,7 @@ async def _resolve_marketplace_call(
         return MarketplaceCall(tool=chosen_tool, tier="tool", **common)
 
     if not methods:
-        try:  # tier 1 — the org registered this provider: their tool, their bindings, their ACLs
+        try:  # tier 1 - the org registered this provider: their tool, their bindings, their ACLs
             target = await resolve_call(upstream, caller, db)
             return MarketplaceCall(
                 tool=target.tool, tier="tool", **{**common, "upstream": target.upstream})

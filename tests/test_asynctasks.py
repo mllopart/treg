@@ -74,17 +74,66 @@ async def test_settle_fork_keeps_hold_and_writes_pending_row(
     assert row.settlement_basis["when"] == "terminal"
 
 
-async def test_extraction_failure_is_persisted_fail_closed(
+async def test_a_2xx_without_a_task_id_settles_at_zero_on_the_request_path(
     clients: AsyncClient, monkeypatch, replicate_platform,
 ):
+    """No task in the answer means nothing to poll and nothing to charge: closed now, not parked
+    until the 24-hour deadline (which is what an extraction failure used to do)."""
     response = await _submit(clients, monkeypatch, {})
     assert response.status_code == 201
+    assert response.headers["X-Treg-Cost-Micro"] == "0"
+    call_id = response.headers["X-Treg-Call-Id"]
     async with session_maker() as db:
-        row = await db.get(AsyncTaskRecord, response.headers["X-Treg-Call-Id"])
-        hold = await db.get(Hold, response.headers["X-Treg-Call-Id"])
-    assert row is not None and hold is not None
-    assert row.task_id is None and "extraction failed" in row.error
-    assert row.next_check_at - row.created_at == asynctasks.MAX_AGE
+        assert await db.get(AsyncTaskRecord, call_id) is None
+        assert await db.get(Hold, call_id) is None
+        entries = {e.kind: e.amount_micro for e in (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == call_id))).scalars().all()}
+    assert entries == {"reserve": -3000, "settle": 0}
+
+
+async def test_a_2xx_that_is_not_json_settles_at_zero_on_the_request_path(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    async def fake_relay(*args, **kwargs):
+        body = b"<html>WAF challenge</html>"
+
+        async def stream():
+            yield body
+
+        async def close():
+            return None
+
+        return UpstreamResponse(200, ((b"content-type", b"text/html"),), stream(), close)
+
+    monkeypatch.setattr(call_service, "relay", fake_relay)
+    response = await clients.post(f"/call/{EP}", json={"input": {"prompt": "x", "num_outputs": 1}})
+    assert response.status_code == 200 and response.headers["X-Treg-Cost-Micro"] == "0"
+    call_id = response.headers["X-Treg-Call-Id"]
+    async with session_maker() as db:
+        assert await db.get(AsyncTaskRecord, call_id) is None
+        assert await db.get(Hold, call_id) is None
+
+
+async def test_one_failing_row_does_not_abort_the_tick(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    """relay() raises GatewayFailed (an unset platform key, an SSRF refusal), which is not an
+    httpx or JSON error: it must back that row off and let the tick serve the others."""
+    from treg.application.call.types import GatewayFailed
+    broken = await _due_submission(clients, monkeypatch, {"status": "succeeded", "output": ["u"]})
+    fine = await _due_submission(clients, monkeypatch, {"status": "succeeded", "output": ["u"]})
+
+    async def poll(row, client):
+        if row.call_id == broken:
+            raise GatewayFailed("injection_failed", status_code=502, detail="no platform key")
+        return 200, json.dumps({"status": "succeeded", "output": ["u"]}).encode()
+
+    monkeypatch.setattr(task_app, "_poll", poll)
+    result = await task_app.settle_due()
+    assert (result.claimed, result.settled, result.backed_off) == (2, 1, 1)
+    async with session_maker() as db:
+        assert (await db.get(AsyncTaskRecord, broken)).status == "pending"
+        assert (await db.get(AsyncTaskRecord, fine)).status == "settled"
 
 
 async def test_pending_row_write_failure_releases_the_hold_and_alerts(

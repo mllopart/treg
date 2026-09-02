@@ -242,24 +242,26 @@ async def store_terminal_response(
                      _STORE_TIMEOUT_S)
 
 
-async def load_terminal_responses(call_ids: list[str]) -> dict[str, bytes]:
-    """The archived terminal JSON for each call id that has one. Bytes only, verbatim: the caller
-    decides how to read them. Misses are absent from the mapping, never None."""
-    if not call_ids:
+async def load_terminal_responses(tasks: list[tuple[str, str]]) -> dict[str, bytes]:
+    """The archived terminal JSON for each `(call_id, endpoint_id)` that has one. Bytes only,
+    verbatim: the caller decides how to read them. Misses are absent from the mapping, never None.
+    Looked up by the same key hash `store_terminal_response` wrote under (indexed), not by URL."""
+    if not tasks:
         return {}
     from sqlalchemy import select
 
     from .infra.db import session_maker
     from .models import ArchiveKey, ArchiveSnapshot
 
-    urls = {f"treg://asynctasks/{call_id}": call_id for call_id in call_ids}
+    hashes = {cache_key("GET", endpoint_id, f"treg://asynctasks/{call_id}", b"", {}): call_id
+              for call_id, endpoint_id in tasks}
     out: dict[str, bytes] = {}
     async with session_maker() as s:
         keys = (await s.execute(
-            select(ArchiveKey).where(ArchiveKey.req_url.in_(list(urls))))).scalars().all()
+            select(ArchiveKey).where(ArchiveKey.key_hash.in_(list(hashes))))).scalars().all()
         if not keys:
             return out
-        by_key = {k.id: urls[k.req_url] for k in keys}
+        by_key = {k.id: hashes[k.key_hash] for k in keys}
         snaps = (await s.execute(
             select(ArchiveSnapshot).where(ArchiveSnapshot.key_id.in_(list(by_key)))
             .order_by(ArchiveSnapshot.key_id, ArchiveSnapshot.version.desc()))).scalars().all()
@@ -269,7 +271,8 @@ async def load_terminal_responses(call_ids: list[str]) -> dict[str, bytes]:
         for key_id, snap in newest.items():
             body = snap.body
             if body is None and snap.body_of is not None:
-                body = (await s.get(ArchiveSnapshot, snap.body_of)).body
+                carrier = await s.get(ArchiveSnapshot, snap.body_of)
+                body = carrier.body if carrier is not None else None
             if body is not None:
                 out[by_key[key_id]] = body
     return out

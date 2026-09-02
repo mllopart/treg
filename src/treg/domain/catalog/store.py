@@ -224,7 +224,7 @@ def _read_yaml(path: Path) -> dict:
 def effective_async_descriptor(default: object, override: object = None) -> object:
     """The descriptor an endpoint actually follows: its own block, else the provider file's default.
 
-    An endpoint block REPLACES the provider default wholesale — a descriptor is one protocol, and
+    An endpoint block REPLACES the provider default wholesale - a descriptor is one protocol, and
     a protocol that differs in one axis (MiniMax v2 versus v1) differs in its poll target, status
     vocabulary and result location together, so a field-wise merge only ever produced descriptors
     nobody had written down. ``false`` is the explicit opt-out for utility and synchronous rows
@@ -239,7 +239,7 @@ def effective_async_descriptor(default: object, override: object = None) -> obje
 
 def _table_floor(cost: object, input_schema: object) -> float | None:
     """The cheapest price a `cost.table` can produce, in the table's own currency: the smallest
-    row value, a `times` row taken at its field's declared minimum (or 1). Display only — reserve
+    row value, a `times` row taken at its field's declared minimum (or 1). Display only - reserve
     and settle read the rows themselves."""
     if not isinstance(cost, dict) or not isinstance(cost.get("table"), list):
         return None

@@ -76,7 +76,7 @@ def artifact(descriptor: dict, terminal: object) -> dict:
     mode yields the retrieval target as `{endpoint, name, value}` (the artifact lives behind one
     more call and treg never downloads media) for the caller to format. `ttl_note` passes through
     so every display can say how long the address stays valid. Shared by the CLI awaiter, the
-    settlement worker's views and the dashboard — one reading of the descriptor, not three.
+    settlement worker's views and the dashboard - one reading of the descriptor, not three.
     """
     rule = (descriptor or {}).get("result") or {}
     view: dict = {"result": None, "result_url": None, "fetch": None,

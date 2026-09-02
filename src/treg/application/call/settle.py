@@ -15,6 +15,7 @@ from ...domain.capacity import marks as capacity_marks
 from ...domain.capacity import overflow_spend as overflow_spend_ledger
 from ...domain.capacity import signatures as capacity_signatures
 from ...domain import money as ledger
+from ...domain.asynctasks import json_path
 from ...domain.money import settlement as settlement_basis
 from ...domain.catalog import store as catalog_store
 from ...infra.db import session_maker
@@ -311,21 +312,9 @@ def _observed_cost_micro(mk: MarketplaceCall, body: bytes, headers=None) -> int 
 
 
 def _dig(doc, dotted: str):
-    """Walk a dotted path through dicts and list indices — the same reader `expect` was written
-    for (scripts/catalog_verify.py), so a rule means at settle time exactly what it meant at
-    verification time."""
-    cur = doc
-    for part in dotted.split("."):
-        if isinstance(cur, list):
-            try:
-                cur = cur[int(part)]
-            except (ValueError, IndexError):
-                return None
-        elif isinstance(cur, dict):
-            cur = cur.get(part)
-        else:
-            return None
-    return cur
+    """The one dotted-path reader (`domain.asynctasks.json_path`), under the name settle grew up
+    with: an `expect` rule means at settle time exactly what it meant at verification time."""
+    return json_path(doc, dotted)
 
 
 async def _buffer_response(response: UpstreamResponse) -> tuple[UpstreamResponse, bytes]:

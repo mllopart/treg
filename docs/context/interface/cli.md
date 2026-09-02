@@ -275,8 +275,8 @@ Bare **`treg connections`** now lists (the subparser is `required=False` with a 
   and `--runs` delegate to `cmd_calls` / `cmd_runs` verbatim (the old `treg calls` / `treg runs` output,
   byte for byte). The **default merged view** is the only new behaviour in the consolidation: it fetches
   both `GET /calls` and `GET /runs` (no new endpoint), normalises each row to
-  `{kind, id, user_email, tool, detail, result, where, created_at}` (plus `task` — `status`,
-  `settled_micro`, `result_url`, `fetch_command`, `ttl_note` — when `/calls` reports an `async_task`
+  `{kind, id, user_email, tool, detail, result, where, created_at}` (plus `task` - `status`,
+  `settled_micro`, `result_url`, `fetch_command`, `ttl_note` - when `/calls` reports an `async_task`
   for the row, i.e. a metered generation), sorts by `created_at` descending and truncates to `--limit`. It **drops the `kind == "local_run"` CallRecords**, because `/runs` already
   surfaces those same grants as its `where: "local"` rows — otherwise every local run would be listed
   twice. Call ids are prefixed `c…`; run ids keep `/runs`' own `s…`/`l…` prefixes, so nothing collides.

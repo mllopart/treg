@@ -2254,10 +2254,12 @@ def cmd_tool_update(args, cfg) -> None:
 
 # ---- call + audit -------------------------------------------------------------------------
 # The descriptor semantics (dotted paths, terminal classification, artifact extraction) are the
-# server's own `treg.domain.asynctasks`, a stdlib-only leaf — one implementation, pinned light by
+# server's own `treg.domain.asynctasks`, a stdlib-only leaf - one implementation, pinned light by
 # `test_import_lightness` and an import-linter contract, so the CLI and the settlement worker can
 # never disagree about what "done" means.
+from .domain.asynctasks import ExtractionError as _AsyncExtractionError  # noqa: E402
 from .domain.asynctasks import artifact as _async_artifact  # noqa: E402
+from .domain.asynctasks import extract_submission as _extract_submission  # noqa: E402
 from .domain.asynctasks import fetch_command as _async_fetch_command  # noqa: E402
 from .domain.asynctasks import shown as _shown  # noqa: E402
 from .domain.asynctasks import classify_terminal as _classify_terminal  # noqa: E402
@@ -2292,24 +2294,23 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
         submitted = submission.json()
     except ValueError:
         return {"code": 1, "error": "the async submission response is not JSON"}
-    task_id = _json_path(submitted, descriptor.get("id_from", ""))
-    if task_id in (None, ""):
+    try:
+        # The server's own reading of the submission: task id, and for dynamic polling an https
+        # URL on the descriptor's allow-list - the same rule the settlement worker applies.
+        extracted = _extract_submission(descriptor, submitted)
+    except _AsyncExtractionError as exc:
         # The provider's answer IS the diagnosis (MiniMax puts "invalid params, ..." in a 200);
         # hand it to stdout as any other response, then say what treg could not find in it.
-        return {"code": 1, "response": submission,
-                "error": f"the submission response has no {descriptor.get('id_from')!r}"}
+        return {"code": 1, "response": submission, "error": str(exc)}
+    task_id = extracted.task_id
     poll = descriptor["poll"]
     if poll.get("endpoint"):
         _, param_name = _async_param(poll["param"])
         target = poll["endpoint"]
-        params = [(param_name, str(task_id))]
-        recovery = f"treg call {target} -p {shlex.quote(param_name + '=' + str(task_id))}"
+        params = [(param_name, task_id)]
+        recovery = f"treg call {target} -p {shlex.quote(param_name + '=' + task_id)}"
     else:
-        target = _json_path(submitted, poll["url_from"])
-        if not isinstance(target, str) or not target:
-            return {"code": 1, "error": f"the submission response has no {poll['url_from']!r}"}
-        if (urlsplit(target).hostname or "").lower() not in {str(h).lower() for h in poll["url_hosts"]}:
-            return {"code": 1, "error": "the async polling URL host is not allow-listed"}
+        target = extracted.poll_url
         params = []
         recovery = f"treg call {shlex.quote(target)}"
 
@@ -2482,16 +2483,23 @@ def cmd_call(args, cfg) -> None:
             # the CLI would bypass server-side credential injection and the host safety check.
             return c.get(f"/call/{target}", params=poll_params)
 
-        submitted = submission.json()
-        task_id = _json_path(submitted, descriptor.get("id_from", ""))
-        poll = descriptor.get("poll") or {}
-        if poll.get("endpoint") and task_id not in (None, ""):
-            _, resume_name = _async_param(poll["param"])
-            recovery = f"treg call {poll['endpoint']} -p {shlex.quote(resume_name + '=' + str(task_id))}"
-        elif poll.get("url_from"):
-            recovery = f"treg call {shlex.quote(str(_json_path(submitted, poll['url_from']) or ''))}"
-        else:
-            recovery = ""
+        try:
+            submitted = submission.json()
+        except ValueError:
+            submitted = None
+        task_id, recovery = None, ""
+        try:
+            extracted = _extract_submission(descriptor, submitted) if submitted is not None else None
+        except _AsyncExtractionError:
+            extracted = None
+        if extracted is not None:
+            task_id = extracted.task_id
+            poll = descriptor.get("poll") or {}
+            if poll.get("endpoint"):
+                _, resume_name = _async_param(poll["param"])
+                recovery = f"treg call {poll['endpoint']} -p {shlex.quote(resume_name + '=' + task_id)}"
+            elif extracted.poll_url:
+                recovery = f"treg call {shlex.quote(extracted.poll_url)}"
         if task_id not in (None, ""):
             print(f"async task submitted: {_shown(task_id)}", file=sys.stderr)
             if recovery:
@@ -2516,7 +2524,7 @@ def cmd_call(args, cfg) -> None:
             print(f"result: {rendered}", file=sys.stderr)
         if outcome.get("fetch_command"):
             # What comes back is the provider's own retrieval answer: the file bytes (OpenRouter) or
-            # a JSON envelope carrying a download URL (MiniMax) — the command is the same shape.
+            # a JSON envelope carrying a download URL (MiniMax) - the command is the same shape.
             print(f"retrieve the result (file bytes, or JSON with a download URL): "
                   f"{outcome['fetch_command']}", file=sys.stderr)
         if outcome.get("ttl_note"):
@@ -5131,7 +5139,7 @@ def _print_params(inp: dict) -> None:
 
 
 def _print_price_table(cost, inp: dict) -> None:
-    """The price rows a `cost.table` endpoint bills by — the matrix behind the "$low-$high" line.
+    """The price rows a `cost.table` endpoint bills by - the matrix behind the "$low-$high" line.
     Rows are the provider's own price list, first match wins; the fallback is what an unmatched
     request reserves."""
     if not isinstance(cost, dict) or not isinstance(cost.get("table"), list) or not cost["table"]:
@@ -5155,15 +5163,15 @@ def _print_price_table(cost, inp: dict) -> None:
         print(f"  {'fallback (ceiling)':<58} {money(float(fb['value']))}")
     if settle == "usage":
         usage = cost.get("usage") or {}
-        _dim(f"  settle: usage — the matched row is reserved; the provider's reported "
+        _dim(f"  settle: usage - the matched row is reserved; the provider's reported "
              f"{usage.get('path', 'usage')} is what you pay")
         _dim("  (it can exceed the reserve when the provider applies a minimum charge).")
     else:
-        _dim("  settle: table — the matched row is reserved at submission and charged when the task succeeds.")
+        _dim("  settle: table - the matched row is reserved at submission and charged when the task succeeds.")
 
 
 def _print_async(desc) -> None:
-    """How an async generation call is followed — the same descriptor `--await` executes and the
+    """How an async generation call is followed - the same descriptor `--await` executes and the
     `X-Treg-Async` header carries, so an MCP or raw-HTTP agent can poll it by hand."""
     if not isinstance(desc, dict) or not desc:
         return
@@ -5188,7 +5196,7 @@ def _print_async(desc) -> None:
         print(f"  result       treg call {result['fetch']} -p {fp.get('name')}=<`{fp.get('value_from')}` "
               f"from the finished task>")
     if result.get("ttl_note"):
-        print(f"  lifetime     {result['ttl_note']} — download promptly; treg never stores media")
+        print(f"  lifetime     {result['ttl_note']} - download promptly; treg never stores media")
     _dim("  `treg call … --await` does all of this and prints the final response; from a coding")
     _dim("  agent, raise the shell tool's timeout or run it in the background (video takes 1-5 min).")
 

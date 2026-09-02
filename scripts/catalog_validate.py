@@ -333,7 +333,7 @@ def check_async_descriptor(descriptor: object, where: str, provider: str,
             fail(errors, where, f"{label} target does not declare input field '{location}.{field}'")
         elif target is not None:
             # The declared location must agree with the target path: a pathParams id needs exactly
-            # one `{name}` placeholder, a queryParams id none — the worker substitutes by location.
+            # one `{name}` placeholder, a queryParams id none - the worker substitutes by location.
             marker, path = "{" + field + "}", str(target.get("path") or "")
             if location == "pathParams" and path.count(marker) != 1:
                 fail(errors, where, f"{label} pathParams '{field}' needs exactly one {marker} in the target path")

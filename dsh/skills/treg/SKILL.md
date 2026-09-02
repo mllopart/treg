@@ -150,11 +150,11 @@ Notes:
     stops at the first miss. `catalog_get treg.people.email.find` shows the plan and prices.
 - An endpoint with no published price is refused rather than served free; connect your own key.
 
-## Task — generate a video or an image
+## Task - generate a video or an image
 
 Generation models live in the catalog under the `video-gen` and `image-gen` platforms, one row per
 model per route (MiniMax direct, Replicate, OpenRouter), so the same model on two routes sits next
-to itself with both prices. Models are not interchangeable — you pick one; treg does not choose.
+to itself with both prices. Models are not interchangeable - you pick one; treg does not choose.
 
 ```bash
 treg catalog search "text to video"                  # every model, with prices
@@ -171,17 +171,17 @@ How it works:
   (resume with the printed command).
 - **CLI agents: raise your shell tool's timeout or run the call in the background.** A video takes
   1-5 minutes; a runtime's default 2-minute command limit cuts it off mid-wait.
-- **MCP and raw-HTTP agents:** the response header `X-Treg-Async` is the descriptor — where to poll,
+- **MCP and raw-HTTP agents:** the response header `X-Treg-Async` is the descriptor - where to poll,
   which status values are terminal, where the result is. Poll lazily: wait ~60 s before the first
   check, then every 30-60 s; three to six checks per video is normal. Do other work in between.
 - Parameters are the provider's own, verbatim; `treg catalog get` shows them, including the
   enum of selectable models and resolutions. Nothing is translated between providers.
 - **Money:** the price is reserved at submission and charged only when the task succeeds. A failed
-  or moderated task refunds the whole hold — nothing to do on your side. `treg audit` and the
+  or moderated task refunds the whole hold - nothing to do on your side. `treg audit` and the
   dashboard's Activity page show each task's state (`generating…` → `done` / `failed · refunded`)
   with the result link once it exists.
 - **Result URLs expire** (the descriptor's `ttl_note` says how soon; MiniMax's ~9h). Download
-  promptly; treg never stores the media. On some routes the file needs one more call —
+  promptly; treg never stores the media. On some routes the file needs one more call -
   `--await` prints that exact command instead of downloading.
 
 ## Retrying a call without paying twice

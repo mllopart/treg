@@ -22,7 +22,7 @@
 # the key, the word the catalog HAS as the value.
 
 aliases:
-  # AI generation vocabulary — Chinese query terms, abbreviations, and model families
+  # AI generation vocabulary - Chinese query terms, abbreviations, and model families
   生视频: [text-to-video, image-to-video]
   文生视频: [text-to-video]
   图生视频: [image-to-video]

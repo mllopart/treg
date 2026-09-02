@@ -139,7 +139,7 @@ def test_async_wait_dynamic_url_enforces_hosts_and_fetches_by_terminal_id():
         FakeClock(), 30,
     )
     assert refused["code"] == 1
-    assert "not allow-listed" in refused["error"]
+    assert "allow-list" in refused["error"]
 
 
 def call_args(**overrides):

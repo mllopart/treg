@@ -20,7 +20,8 @@ related:
 
 Async settlement archives terminal provider JSON under `treg://asynctasks/<call_id>` using the
 original endpoint and provider. This mandatory evidence may contain expiring result URLs; the worker
-never follows those URLs and never stores generated media bytes. `load_terminal_responses(call_ids)`
+never follows those URLs and never stores generated media bytes. `load_terminal_responses((call_id, endpoint_id), …)`, which looks them up by the indexed key hash
+they were stored under and tolerates a pruned carrier,
 reads them back (newest snapshot per key, following `body_of`) for the Activity displays, which
 extract the artifact through the descriptor rather than by guessing at the provider's shape.
 

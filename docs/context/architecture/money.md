@@ -186,8 +186,14 @@ deadline it releases the hold in full**, marks the row `timed_out` with `reconci
 an ERROR-level alert: an outcome nobody observed is the platform's cost, never the customer's, and a
 provider that silently changed its status field shows up as absorbed timeouts in
 `reconcile.async_task_settlement` (`absorbed_timeouts`) rather than as a quiet overcharge.
-Extraction failure at submission is the same shape: the row carries the error and reaches that
-deadline untouched. A `settle: usage` row reserves what its rate-card table says THIS request costs
+A 2xx that is not an accepted submission (not JSON, fails the endpoint's `expect` rule, or carries
+no task id / an off-allow-list poll URL: `application.call.service._submission_rejected`) never
+becomes a row: it settles at zero on the request path and the caller sees the body and `$0`. The
+worker never lets one row abort a tick (`_process` catches everything, `settle_due` gathers with
+`return_exceptions`), because an unset platform key for one provider must not stall every other
+provider's settlements. An overflow child (`application.call.overflow._child`) carries its own
+observed-kind basis at the aggregator price, so an aggregator that reports no cost settles at the
+aggregator reserve, not at the parent's price. A `settle: usage` row reserves what its rate-card table says THIS request costs
 (the matrix ceiling had made a $0.05 call demand a $6 balance) and settles the provider's reported
 figure, which may exceed the reserve: the ledger takes the difference from the balance, the next
 reserve is the gate, and `reconcile.async_task_settlement` lists every such `overrun` (the team
@@ -195,16 +201,15 @@ paid it) and every settle whose `block_shortfall_micro` > 0 (`absorbed_shortfall
 ate what the team's blocks could not cover). A success whose terminal response carries no usage
 figure settles at the reserve with `reconcile_review` and an ERROR alert, never at the ceiling.
 When the pending row itself cannot be persisted, the request path releases the
-hold with reason `async_task_not_recorded` and logs an ERROR alert — the same doctrine, since nobody
-will observe that task's outcome. A 2xx whose envelope fails the endpoint's `expect` rule is not a
-task at all and releases through the ordinary response-time path. The only usage unit real traffic has settled is `usd` (OpenRouter's
+hold with reason `async_task_not_recorded` and logs an ERROR alert - the same doctrine, since nobody
+will observe that task's outcome. The only usage unit real traffic has settled is `usd` (OpenRouter's
 `usage.cost`); a token unit returns with the first metered token-priced listing, together with its fx
 rule and a live test. Ledger writes remain exclusively through `domain/money`.
 
 The audit row (`CallRecord`) froze the reserve as `cost_charged_micro` at submission, so displays
 must not read it alone. `application.asynctasks.views_for(org_id, call_ids)` is the read side: it
 joins the org's `AsyncTaskRecord`s, loads the archived terminal JSON for settled ones, and derives
-the artifact with the pure `domain.asynctasks.artifact(descriptor, terminal)` — the first URL under
+the artifact with the pure `domain.asynctasks.artifact(descriptor, terminal)` - the first URL under
 `result.path`, or the `{endpoint, name, value}` retrieval target for fetch-mode descriptors (the
 view formats it as `treg call … -p name=value`), plus `ttl_note`. The CLI's `--await` calls the
 same function; there is one reading of the descriptor, not a mirror. `/calls`,

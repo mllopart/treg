@@ -25,6 +25,7 @@ from ...domain.capacity.view import view as capacity_view
 from ...infra.upstream.limiter import limiter as provider_limiter
 from ...infra.upstream.relay import relay
 from .. import asynctasks as async_task_app
+from ...domain import asynctasks as asynctasks_rules
 from .authorize import authorize_call, enforce_public_demo_limit
 from .evidence import (
     _ERROR_BODY_SLICE,
@@ -929,9 +930,10 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
         # A submission is deferred only when the provider actually accepted it: a 2xx whose
         # envelope fails the endpoint's `expect` rule (MiniMax answers HTTP 200 with
         # base_resp.status_code 2013 for a bad parameter) is a failure and releases now.
-        deferred = bool(
-            mk.settlement_basis.get("when") == "terminal" and 200 <= response.status < 300
-            and _submission_accepted(mk, body))
+        terminal_2xx = (mk.settlement_basis.get("when") == "terminal"
+                        and 200 <= response.status < 300)
+        rejected = _submission_rejected(mk, body) if terminal_2xx else ""
+        deferred = terminal_2xx and not rejected
         try:
             request.context.finalization = FinalizationState.FINALIZING
             if deferred:
@@ -939,7 +941,7 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
                     charged = await async_task_app.defer_submission(mk, body, caller.org_id)
                     observed = None
                     request.context.finalization = FinalizationState.FINALIZED
-                except Exception as exc:  # noqa: BLE001 — an accepted task must never orphan a hold
+                except Exception as exc:  # noqa: BLE001 - an accepted task must never orphan a hold
                     # treg could not record the task, so nobody will ever observe its outcome.
                     # The platform absorbs that: release the hold (status None = never a charge)
                     # and alert. Charging the basis here would bill a customer for treg's own
@@ -954,13 +956,25 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
                             request.context, "finalization", FinalizationState.FINALIZED),
                     )
                     deferred = False
+            elif rejected:
+                # An async endpoint answered 2xx with no task in it (an error envelope, a WAF
+                # page, a changed schema): nothing to poll, nothing to charge. Closed now, not
+                # parked for 24 hours; the caller gets the body and sees $0.
+                logging.getLogger("treg.asynctasks").warning(
+                    "call %s on %s: 2xx but not an accepted submission (%s); settled at zero",
+                    call_ref, mk.endpoint_id, rejected)
+                charged, observed = await _platform_settle(
+                    mk, response.status, body, observed_override=0, reason=rejected,
+                    finalized=lambda: setattr(
+                        request.context, "finalization", FinalizationState.FINALIZED),
+                )
             else:
                 charged, observed = await _platform_settle(
                     mk, response.status, body, headers=httpx.Headers(response.raw_headers),
                     # `provider_failed_`, not `call_failed_`: the latter is the branch above, where treg
                     # never got an answer (timeout, SSRF refusal, a failed oauth refresh). Both release a
                     # 502 the same way, so a shared prefix would make the two indistinguishable in the
-                    # journal once the 14-day error evidence expires — and they need different fixes.
+                    # journal once the 14-day error evidence expires - and they need different fixes.
                     reason=(f"provider_failed_{response.status}" if response.status >= 500 else ""),
                     finalized=lambda: setattr(
                         request.context, "finalization", FinalizationState.FINALIZED),
@@ -1075,14 +1089,24 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
     return response
 
 
-def _submission_accepted(mk, body: bytes) -> bool:
-    """Whether a 2xx submission passed the endpoint's `expect` envelope rule (True when it has none
-    or the body is not JSON: an undecidable answer defers, and the worker's 24-hour deadline then
-    releases it — never a silent charge)."""
-    rule = (catalog_store.load().by_id.get(mk.endpoint_id) or {}).get("expect")
-    if not rule:
-        return True
+def _submission_rejected(mk, body: bytes) -> str:
+    """Why a 2xx answer from an async endpoint is NOT an accepted submission ("" when it is): the
+    body is not JSON, it fails the endpoint's `expect` envelope rule, or the descriptor finds no
+    task id (or an off-allow-list poll URL) in it. Decided on the request path so the hold closes
+    at zero now instead of being parked until the 24-hour deadline."""
     try:
-        return _dig(json.loads(body), rule["json_path"]) == rule.get("equals")
-    except (ValueError, UnicodeDecodeError, KeyError, TypeError):
-        return True
+        document = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return "submission_not_json"
+    rule = (catalog_store.load().by_id.get(mk.endpoint_id) or {}).get("expect")
+    if rule:
+        try:
+            if _dig(document, rule["json_path"]) != rule.get("equals"):
+                return "submission_expect_failed"
+        except (KeyError, TypeError):
+            pass
+    try:
+        asynctasks_rules.extract_submission(mk.async_descriptor or {}, document)
+    except asynctasks_rules.ExtractionError:
+        return "submission_without_task_id"
+    return ""

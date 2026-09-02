@@ -162,7 +162,7 @@ def carry_verification(provider: str, endpoints: list[dict], *, carry_capability
 
     Those fields are the only ones NOT derived from upstream: verification stamps are the result
     of an actual paid call made by scripts/catalog_verify_extended.py. `name` (the short display
-    title) and `kind` (data | action | account | utility — a reviewed judgement the ingest cannot
+    title) and `kind` (data | action | account | utility - a reviewed judgement the ingest cannot
     re-derive) are carried on the same guard. A provider may also carry reviewed `capability`
     mappings; AIGC coverage ingesters disable that option because comparison membership belongs
     only in core.

@@ -814,7 +814,7 @@ async def test_ai_generation_pages_keep_comparisons_curated_and_coverage_in_mode
         clients: AsyncClient):
     video = (await clients.get("/catalog/platforms/video-gen")).json()
     # One ledger of standalone model rows. Generation models are not interchangeable, so the
-    # job-level capabilities (video-gen.from_text/.from_image) hold NO endpoints — a merged row
+    # job-level capabilities (video-gen.from_text/.from_image) hold NO endpoints - a merged row
     # comparing Hailuo with Wan or Seedance would be a false comparison. Curated core rows carry
     # per-model capabilities instead (single-provider, so they render as singles in the wall);
     # the job-level rows return only when specific models are hand-picked into them.

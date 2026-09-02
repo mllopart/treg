@@ -41,16 +41,11 @@ def _json_value(value: object) -> object:
 async def defer_submission(mk, body: bytes, org_id: int) -> int:
     """Persist the pending task before allowing the request path to leave its hold open."""
     now = utcnow_naive()
-    error = ""
-    task_id = poll_url = None
-    try:
-        document = json.loads(body)
-        extracted = asynctasks.extract_submission(mk.async_descriptor or {}, document)
-        task_id, poll_url = extracted.task_id, extracted.poll_url
-        due = now + timedelta(seconds=60)
-    except (ValueError, UnicodeDecodeError, asynctasks.ExtractionError) as exc:
-        error = f"submission extraction failed: {exc}"[:500]
-        due = now + asynctasks.MAX_AGE
+    # The request path has already established that this body is JSON and carries the task id
+    # (`_submission_accepted`); a failure here is a programming error and surfaces as one.
+    extracted = asynctasks.extract_submission(mk.async_descriptor or {}, json.loads(body))
+    task_id, poll_url, error = extracted.task_id, extracted.poll_url, ""
+    due = now + timedelta(seconds=60)
     async with session_maker() as db:
         hold = await db.get(Hold, mk.call_id)
         if hold is None:
@@ -85,7 +80,7 @@ async def views_for(org_id: int, call_ids: list[str]) -> dict[str, dict]:
     if not rows:
         return {}
     documents = await archive.load_terminal_responses(
-        [row.call_id for row in rows if row.status == asynctasks.SETTLED])
+        [(row.call_id, row.endpoint_id) for row in rows if row.status == asynctasks.SETTLED])
     views: dict[str, dict] = {}
     for row in rows:
         view = {
@@ -171,7 +166,7 @@ async def _poll(row: AsyncTaskRecord, client: httpx.AsyncClient) -> tuple[int, b
     method, url, query = _poll_target(row)
     # The query travels as `query_items`: the relay composes the upstream URL from those (it
     # forwards a URL's own query string nowhere), so a query-parameter poll (MiniMax v1
-    # `?task_id=`) appended to the URL reached the provider empty — "invalid params" until the
+    # `?task_id=`) appended to the URL reached the provider empty - "invalid params" until the
     # 24-hour deadline. Path-parameter polls never showed it. Live 2026-09-02.
     tool = Tool(org_id=row.org_id, name=row.endpoint_id, owner="treg-worker",
                 base_url=provider.base_url, host=_host_of(provider.base_url),
@@ -219,7 +214,7 @@ async def _finish(call_id: str, outcome: str, document: object | None, now) -> s
             if unobserved:
                 row.error = "usage field missing from the terminal response; settled at the reserve"
                 log.error("ASYNC USAGE UNOBSERVED: call %s on %s succeeded but %s carried no usage "
-                          "figure; settled at the reserve — check the provider's response shape",
+                          "figure; settled at the reserve - check the provider's response shape",
                           row.call_id, row.provider, row.endpoint_id)
             row.settled_micro = await ledger.settle_in_transaction(db, row.call_id, raw, meta={
                 "provider": row.provider, "cost_source": row.settlement_basis["amount"]["kind"],
@@ -243,7 +238,7 @@ async def _finish(call_id: str, outcome: str, document: object | None, now) -> s
             row.status = asynctasks.TIMED_OUT
             row.error = "terminal state not observed within 24 hours; hold released, platform absorbs"
             log.error("ASYNC TASK TIMED OUT: call %s on %s (%s) had no terminal state in 24h; "
-                      "released %d micro-USD to the team, platform absorbs the upstream charge — "
+                      "released %d micro-USD to the team, platform absorbs the upstream charge - "
                       "check whether the provider changed its status field",
                       row.call_id, row.provider, row.endpoint_id, row.reserved_micro)
         else:
@@ -281,8 +276,11 @@ async def _process(call_id: str, client: httpx.AsyncClient) -> str:
             await archive.store_terminal_response(
                 snapshot.call_id, snapshot.provider, snapshot.endpoint_id, status, body)
         return result
-    except (httpx.HTTPError, ValueError, UnicodeDecodeError, RuntimeError) as exc:
-        log.warning("async poll failed for call %s: %s", call_id, exc)
+    except Exception as exc:  # noqa: BLE001 - one row's failure must never abort the tick
+        # relay() raises GatewayFailed (an unset platform key, an SSRF refusal), httpx raises its
+        # own, JSON raises ValueError: all mean "no evidence this tick". Back off and say why; the
+        # deadline still ends it, and the whole tick keeps serving the other rows.
+        log.warning("async poll failed for call %s: %s: %s", call_id, type(exc).__name__, exc)
         return await _finish(call_id, "progress", None, now)
 
 
@@ -306,10 +304,17 @@ async def settle_due(*, limit: int = DEFAULT_LIMIT, client: httpx.AsyncClient | 
             return await _process(call_id, client)
 
     try:
-        outcomes = await asyncio.gather(*(run(call_id) for call_id in call_ids))
+        results = await asyncio.gather(*(run(call_id) for call_id in call_ids), return_exceptions=True)
     finally:
         if owned:
             await client.aclose()
+    outcomes = []
+    for call_id, result in zip(call_ids, results):
+        if isinstance(result, BaseException):  # _process already guards; this is the last net
+            log.error("async task %s: tick-level failure: %s", call_id, result, exc_info=result)
+            outcomes.append("backed_off")
+        else:
+            outcomes.append(result)
     return TickResult(
         claimed=len(call_ids), settled=outcomes.count(asynctasks.SETTLED),
         released=outcomes.count(asynctasks.RELEASED),

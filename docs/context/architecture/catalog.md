@@ -253,8 +253,8 @@ set `domain: models`; this keeps every coverage row as a standalone model. Their
 reviewed names/kinds without resurrecting old inferred capability tags.
 The core AIGC generation rows pin `domain: models` too and carry PER-MODEL capabilities
 (`video-gen.hailuo.from_text`, proposed in their provider files) rather than the job-level
-`video-gen.from_text` family. Generation models are not interchangeable — a merged row comparing
-Hailuo with Wan or Seedance is a false comparison — so the job-level capabilities are deliberately
+`video-gen.from_text` family. Generation models are not interchangeable - a merged row comparing
+Hailuo with Wan or Seedance is a false comparison - so the job-level capabilities are deliberately
 memberless, reserved for hand-picked models (see capabilities.yaml). Both AI generation pages
 therefore render as ONE flat model wall; the same model reachable over several routes (MiniMax
 direct, OpenRouter, Replicate all serve Hailuo) sits adjacent under model-led names, which is the
@@ -352,7 +352,7 @@ a utility or synchronous endpoint out of the provider default; absence means inh
 the CLI reaches through `/call/<id>` on any credential tier. Replicate offers both `urls.get` and the
 stable `GET /v1/predictions/{id}`; the static form is listed (`replicate.predictions.get`) because a
 `--await` that polled the absolute URL through `/call/https://…` was refused for a team on treg's
-key — that path resolves only a team's own tool (sample run, 2026-09-02). The dynamic-URL mode
+key - that path resolves only a team's own tool (sample run, 2026-09-02). The dynamic-URL mode
 (`poll.url_from` + `url_hosts`) stays in the schema, validator and worker for a provider that offers
 nothing else (BFL), but today it works only for BYOK teams; serving it on the platform key needs a
 host-allow-listed relay that is not built. Do not document it as available.
@@ -387,7 +387,7 @@ async:
 A `cost.table` also prices out as a range: at load time `_table_floor` computes the cheapest row
 (a `times` row at its field's declared `min`) into `cost.table_min`, and `cost_view` exposes it as
 `usd_min` beside `usd`, which stays the validated ceiling (what reserve and eligibility read). Every
-price surface — the wall, `treg catalog search`, the dashboard, `/access` — shows `$low-$high` for a
+price surface - the wall, `treg catalog search`, the dashboard, `/access` - shows `$low-$high` for a
 table rather than the worst case alone.
 
 The validator checks the effective descriptor. Dotted JSON paths are syntactically valid; success and

@@ -55,18 +55,19 @@ def window_start(days: int) -> datetime:
 
 async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
     """Pending age, absorbed timeouts (holds released after 24h, the platform ate any upstream
-    charge — each one is a review item), per-provider terminal settlement outcomes, and the two
+    charge - each one is a review item), per-provider terminal settlement outcomes, and the two
     places a usage-settled task can cost more than its reserve:
 
     - `overruns`: settled tasks whose provider-reported cost exceeded the reserve (the rate-card
       estimate). The TEAM paid the difference from its balance; this is where an unpublished
       minimum charge (Wan 3.0, live 2026-09-02) shows up as a pattern worth encoding as data.
-    - `absorbed_shortfalls`: settle entries whose `block_shortfall_micro` > 0 — the team's blocks
+    - `absorbed_shortfalls`: settle entries whose `block_shortfall_micro` > 0 - the team's blocks
       could not cover the settle, so the PLATFORM absorbed the rest. Read from the ledger, all
       settles in the window, not only async ones.
     """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    rows = (await db.execute(select(AsyncTaskRecord))).scalars().all()
+    rows = (await db.execute(select(AsyncTaskRecord).where(
+        (AsyncTaskRecord.status == "pending") | (AsyncTaskRecord.completed_at >= since)))).scalars().all()
     ages = {"under_5m": 0, "5m_to_1h": 0, "1h_to_6h": 0, "6h_to_24h": 0, "over_24h": 0}
     absorbed = []
     overruns = []

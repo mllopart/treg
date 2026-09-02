@@ -582,7 +582,7 @@ validated before resolving the shared HTTP client. `/auth/logout` remains an HTT
   `get_call` therefore join `application.asynctasks.views_for` on `call_ref` and add `async_task`
   (`status`, `task_id`, `reserved_micro`, `settled_micro`, `completed_at`, `error`, `result_url`,
   `fetch_command`, `ttl_note`) while `_async_charged` rewrites the charge to what actually hit the
-  balance — `null` while pending, the settled figure (0 after a refund) at a terminal state.
+  balance - `null` while pending, the settled figure (0 after a refund) at a terminal state.
 - **OAuth connect + the provider marketplace:** `oauth_start` (`POST /oauth/start`) creates a
   `PendingOAuth` and returns `consent_url` + `state` + `redirect_uri` + registry-owned
   `connect_guidance`; `oauth_callback`

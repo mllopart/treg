@@ -151,7 +151,7 @@ task id, a resumable `treg call …` command, progress and the result URL. Exit 
 provider failed the task, 3 = timed out (resume with the printed command). Money is reserved at
 submission and charged only on success; a failed task refunds the hold. Result URLs are time-limited
 (download promptly; treg never stores media). From a coding agent, raise the shell tool's timeout or
-run the call in the background — a video takes 1-5 minutes. `treg audit` shows each task's state.
+run the call in the background - a video takes 1-5 minutes. `treg audit` shows each task's state.
 
 **How a catalogued call is served — the credential ladder, in order:**
 

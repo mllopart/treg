@@ -6,23 +6,13 @@ import json
 import math
 from typing import Any
 
+from ..asynctasks import json_path as _path
+
 
 def _micro(value: float, unit_micro: int) -> int:
     raw = round(float(value) * int(unit_micro), 9)
     whole = int(raw)
     return whole + 1 if raw > whole else whole
-
-
-def _path(value: object, dotted: str) -> object:
-    current = value
-    for part in dotted.split("."):
-        if isinstance(current, dict):
-            current = current.get(part)
-        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
-            current = current[int(part)]
-        else:
-            return None
-    return current
 
 
 def request_evidence(
@@ -99,7 +89,7 @@ def _spec_for(input_schema: dict, dotted: str) -> dict:
 
 def _bounded_multiplier(value: object, spec: dict) -> float | None:
     """A `times` value the table may multiply by: a finite number inside the field's declared
-    range (positive when no minimum is declared). Anything else is None — the row does not price
+    range (positive when no minimum is declared). Anything else is None - the row does not price
     that request and the explicit fallback does, so a caller cannot reserve zero with
     `duration: 0` or bill past the validated ceiling with `duration: 100`."""
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
@@ -183,7 +173,7 @@ def settle(basis: dict, evidence: dict[str, Any]) -> int:
             if amount.get("unit") == "usd":
                 return _micro(float(value), 1_000_000)
         # A successful task whose terminal response no longer carries the usage field: the caller
-        # got their result, so they pay — the reserve (the rate-card estimate), not the ceiling.
+        # got their result, so they pay - the reserve (the rate-card estimate), not the ceiling.
         # The worker marks the row for review; the provider changed its shape.
         return max(0, int(basis.get("reserve_micro") or 0))
     if kind == "observed":

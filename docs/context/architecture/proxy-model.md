@@ -422,3 +422,15 @@ infra names — `ngrok-…`, `x-forwarded-*`, `via` — which have no shared pre
 
 The test asserts an *invented* header (`X-Treg-Future`) is dropped too, so the guarantee is about the
 prefix rather than about today's list.
+
+## Asynchronous submissions on the call path
+
+A catalog endpoint carrying an `async` descriptor resolves like any other (`resolve.py` freezes a
+`settlement_basis` with `when: terminal` and the descriptor on the `MarketplaceCall`). In
+`service._execute_call`, a metered 2xx from such an endpoint is **deferred**
+(`application.asynctasks.defer_submission` writes the pending row and leaves the hold open) unless
+`_submission_rejected` says the body is not an accepted submission (not JSON, `expect` rule failed,
+no task id), in which case it settles at zero at once; a persistence failure releases the hold with
+an alert. `routers/call._attach_async_descriptor` adds `X-Treg-Async` (the effective descriptor) to
+the response, also on an idempotent replay, so a retried `--await` polls the task already running.
+The settlement itself is the money fragment's subject.
