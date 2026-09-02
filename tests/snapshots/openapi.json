@@ -2215,7 +2215,7 @@
     },
     "/admin/reconcile/asynctasks": {
       "get": {
-        "description": "Deferred holds, timeout fallbacks needing review, and provider task outcomes.",
+        "description": "Deferred holds, absorbed timeouts, usage overruns (team paid more than reserved), block\nshortfalls (platform absorbed), and provider task outcomes.",
         "operationId": "admin_reconcile_asynctasks_admin_reconcile_asynctasks_get",
         "parameters": [
           {

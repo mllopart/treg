@@ -103,8 +103,12 @@ def derive_basis(
     if cost.get("table") or cost.get("settle") == "usage":
         fallback = _micro(float(cost["fallback"]["value"]), unit_micro)
         if cost.get("settle") == "usage":
+            # Reserve what the rate card says THIS request costs, not the matrix ceiling: the
+            # ceiling made a $0.05 call demand a $6 balance. The provider's reported cost settles
+            # and may exceed the reserve; the ledger takes the difference from the balance, and the
+            # next reserve is the gate. reconcile lists every overrun (`async_task_settlement`).
             amount = {"kind": "usage", **dict(cost["usage"])}
-            reserve = fallback
+            reserve = table_amount_micro(cost, request, input_schema, unit_micro)
         else:
             amount = {"kind": "table", "cost": cost, "input": input_schema,
                       "request": request, "unit_micro": unit_micro}
@@ -120,6 +124,17 @@ def derive_basis(
     }
 
 
+def usage_evidence(basis: dict, evidence: dict[str, Any]) -> float | None:
+    """The provider-reported usage figure a `usage` basis settles on, or None when the terminal
+    response does not carry a usable one."""
+    amount = basis.get("amount") or {}
+    value = _path(evidence.get("terminal"), str(amount.get("path") or ""))
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) \
+            and value >= 0:
+        return float(value)
+    return None
+
+
 def settle(basis: dict, evidence: dict[str, Any]) -> int:
     """Resolve one frozen basis to raw integer micro-USD without moving ledger money."""
     amount = basis.get("amount") or {}
@@ -128,11 +143,14 @@ def settle(basis: dict, evidence: dict[str, Any]) -> int:
         return table_amount_micro(
             amount["cost"], amount["request"], amount["input"], int(amount["unit_micro"]))
     if kind == "usage":
-        value = _path(evidence.get("terminal"), str(amount.get("path") or ""))
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) \
-                and value >= 0:
+        value = usage_evidence(basis, evidence)
+        if value is not None:
             if amount.get("unit") == "usd":
                 return _micro(float(value), 1_000_000)
+        # A successful task whose terminal response no longer carries the usage field: the caller
+        # got their result, so they pay — the reserve (the rate-card estimate), not the ceiling.
+        # The worker marks the row for review; the provider changed its shape.
+        return max(0, int(basis.get("reserve_micro") or 0))
     if kind == "observed":
         observed = evidence.get("observed_micro")
         if isinstance(observed, int) and not isinstance(observed, bool) and observed >= 0:

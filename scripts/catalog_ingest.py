@@ -1084,7 +1084,7 @@ def _openrouter_cost(model: dict) -> dict:
         "source_url": "https://openrouter.ai/api/v1/videos/models",
         "checked": "2026-09-02",
         "confidence": "documented",
-        "note": "Table rows quote the live rate card. Indistinguishable mode-specific SKUs collapse to the highest rate. Usage settlement reserves the global fallback because observed charges can include a minimum or fee absent from pricing_skus, then settles terminal usage.cost.",
+        "note": "Table rows quote the live rate card. Indistinguishable mode-specific SKUs collapse to the highest rate. The matched row is reserved and the terminal usage.cost settles; observed charges can include a minimum or fee absent from pricing_skus, so a settle may exceed its reserve (reconcile lists overruns).",
     }
 
 

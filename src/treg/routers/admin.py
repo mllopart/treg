@@ -335,7 +335,8 @@ async def admin_reconcile_repeats(
 async def admin_reconcile_asynctasks(
     since_days: int = 30, _: str = Depends(require_superadmin), db: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Deferred holds, timeout fallbacks needing review, and provider task outcomes."""
+    """Deferred holds, absorbed timeouts, usage overruns (team paid more than reserved), block
+    shortfalls (platform absorbed), and provider task outcomes."""
     since = reconcile.window_start(since_days)
     return {"since": since.isoformat(), "since_days": since_days,
             **await reconcile.async_task_settlement(db, since)}

@@ -55,13 +55,32 @@ def window_start(days: int) -> datetime:
 
 async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
     """Pending age, absorbed timeouts (holds released after 24h, the platform ate any upstream
-    charge — each one is a review item), and per-provider terminal settlement outcomes."""
+    charge — each one is a review item), per-provider terminal settlement outcomes, and the two
+    places a usage-settled task can cost more than its reserve:
+
+    - `overruns`: settled tasks whose provider-reported cost exceeded the reserve (the rate-card
+      estimate). The TEAM paid the difference from its balance; this is where an unpublished
+      minimum charge (Wan 3.0, live 2026-09-02) shows up as a pattern worth encoding as data.
+    - `absorbed_shortfalls`: settle entries whose `block_shortfall_micro` > 0 — the team's blocks
+      could not cover the settle, so the PLATFORM absorbed the rest. Read from the ledger, all
+      settles in the window, not only async ones.
+    """
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = (await db.execute(select(AsyncTaskRecord))).scalars().all()
     ages = {"under_5m": 0, "5m_to_1h": 0, "1h_to_6h": 0, "6h_to_24h": 0, "over_24h": 0}
     absorbed = []
+    overruns = []
     providers: dict[str, dict] = {}
     for row in rows:
+        if row.status == "settled" and row.completed_at and row.completed_at >= since \
+                and (row.settled_micro or 0) > row.reserved_micro:
+            overruns.append({
+                "call_id": row.call_id, "org_id": row.org_id, "provider": row.provider,
+                "endpoint_id": row.endpoint_id, "reserved_micro": row.reserved_micro,
+                "settled_micro": row.settled_micro,
+                "overrun_micro": row.settled_micro - row.reserved_micro,
+                "ratio": round(row.settled_micro / row.reserved_micro, 4) if row.reserved_micro else None,
+                "completed_at": row.completed_at.isoformat()})
         if row.status == "pending":
             seconds = max(0, (now - row.created_at).total_seconds())
             bucket = ("under_5m" if seconds < 300 else "5m_to_1h" if seconds < 3600 else
@@ -90,8 +109,31 @@ async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
                        "settled_usd": usd(item["settled_micro"])})
     output.sort(key=lambda item: item["provider"])
     absorbed.sort(key=lambda item: item["completed_at"], reverse=True)
+    overruns.sort(key=lambda item: item["overrun_micro"], reverse=True)
+    by_endpoint: dict[str, dict] = {}
+    for item in overruns:
+        agg = by_endpoint.setdefault(item["endpoint_id"], {
+            "endpoint_id": item["endpoint_id"], "provider": item["provider"], "tasks": 0,
+            "overrun_micro": 0, "max_ratio": 0.0})
+        agg["tasks"] += 1
+        agg["overrun_micro"] += item["overrun_micro"]
+        agg["max_ratio"] = max(agg["max_ratio"], item["ratio"] or 0.0)
+    settles = (await db.execute(select(LedgerEntry).where(
+        LedgerEntry.kind == "settle", LedgerEntry.created_at >= since))).scalars().all()
+    shortfalls = [{
+        "call_id": e.call_id, "org_id": e.org_id, "endpoint_id": e.endpoint_id,
+        "settled_micro": int((e.meta or {}).get("settled_micro") or 0),
+        "consumed_micro": int((e.meta or {}).get("consumed_micro") or 0),
+        "shortfall_micro": int((e.meta or {}).get("block_shortfall_micro") or 0),
+        "created_at": e.created_at.isoformat() if e.created_at else None,
+    } for e in settles if int((e.meta or {}).get("block_shortfall_micro") or 0) > 0]
+    shortfalls.sort(key=lambda item: item["shortfall_micro"], reverse=True)
     return {"pending": sum(ages.values()), "pending_age": ages,
-            "absorbed_timeouts": absorbed, "providers": output}
+            "absorbed_timeouts": absorbed, "providers": output,
+            "overruns": overruns,
+            "overruns_by_endpoint": sorted(by_endpoint.values(), key=lambda a: -a["overrun_micro"]),
+            "absorbed_shortfalls": shortfalls,
+            "absorbed_shortfall_micro": sum(item["shortfall_micro"] for item in shortfalls)}
 
 
 async def price_drift(

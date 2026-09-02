@@ -265,6 +265,24 @@ def test_basis_derivation_and_settlement_table_vs_usage():
         usage_cost, request={}, input_schema={}, unit_micro=1_000_000, terminal=True)
     assert usage["amount"]["kind"] == "usage"
     assert settlement.settle(usage, {"terminal": {"usage": {"cost": 0.125}}}) == 125_000
+    # No table row matched and no usage figure: the reserve is the fallback, and a success with
+    # no usage evidence settles at that reserve, never above it.
+    assert usage["reserve_micro"] == usage["fallback_micro"] == 1_000_000
+    assert settlement.usage_evidence(usage, {"terminal": {"status": "completed"}}) is None
+    assert settlement.settle(usage, {"terminal": {"status": "completed"}}) == 1_000_000
+
+    # A usage row reserves what the rate card says THIS request costs, not the matrix ceiling.
+    rate_card = {"settle": "usage", "usage": {"path": "usage.cost", "unit": "usd"},
+                 "table": [{"when": {"body.resolution": "480p"}, "value": 0.05, "times": "body.duration"},
+                           {"when": {"body.resolution": "1080p"}, "value": 0.20, "times": "body.duration"}],
+                 "fallback": {"value": 6.0}}
+    schema = {"body": {"resolution": {"type": "string"}, "duration": {"type": "integer", "max": 30}}}
+    cheap = settlement.derive_basis(
+        rate_card, request={"body": {"resolution": "480p", "duration": 2}}, input_schema=schema,
+        unit_micro=1_000_000, terminal=True)
+    assert cheap["reserve_micro"] == 100_000 and cheap["fallback_micro"] == 6_000_000
+    # The provider's reported cost settles even when it exceeds the reserve (Wan 3.0's minimum).
+    assert settlement.settle(cheap, {"terminal": {"usage": {"cost": 0.2125}}}) == 212_500
 
     request = settlement.request_evidence(
         [("id", "42"), ("count", "2")], b"{}", path_names={"id"})
@@ -380,3 +398,37 @@ async def test_query_parameter_poll_travels_as_query_items(monkeypatch):
     assert status == 200 and body == b'{"status": "Success"}'
     assert seen["url"] == "https://api.minimax.io/v1/query/video_generation"
     assert seen["query"] == (("task_id", "437372532953204"),)
+
+
+async def test_reconcile_lists_usage_overruns_and_platform_absorbed_shortfalls(clients: AsyncClient):
+    """The two places a usage-settled task can cost more than its reserve, made visible: the team
+    paid the overrun from its balance; the platform absorbed whatever its blocks could not cover."""
+    now = utcnow_naive()
+    async with session_maker() as db:
+        db.add(AsyncTaskRecord(
+            call_id="over-1", org_id=1, provider="openrouter",
+            endpoint_id="openrouter.video-gen.wan-3-0.from_text", task_id="t", reserved_micro=100_000,
+            settled_micro=212_500, status="settled", created_at=now, next_check_at=now,
+            completed_at=now, descriptor={}, settlement_basis={}))
+        db.add(AsyncTaskRecord(
+            call_id="even-1", org_id=1, provider="openrouter",
+            endpoint_id="openrouter.x.google-veo-3-1", task_id="u", reserved_micro=800_000,
+            settled_micro=800_000, status="settled", created_at=now, next_check_at=now,
+            completed_at=now, descriptor={}, settlement_basis={}))
+        db.add(LedgerEntry(
+            id="le-over-1", org_id=1, kind="settle", amount_micro=-120_000, call_id="over-1",
+            endpoint_id="openrouter.video-gen.wan-3-0.from_text", created_at=now,
+            meta={"settled_micro": 212_500, "consumed_micro": 120_000, "block_shortfall_micro": 92_500}))
+        db.add(LedgerEntry(
+            id="le-even-1", org_id=1, kind="settle", amount_micro=-800_000, call_id="even-1",
+            endpoint_id="openrouter.x.google-veo-3-1", created_at=now,
+            meta={"settled_micro": 800_000, "consumed_micro": 800_000, "block_shortfall_micro": 0}))
+        await db.commit()
+        report = await reconcile.async_task_settlement(db, now - timedelta(hours=1))
+    assert [o["call_id"] for o in report["overruns"]] == ["over-1"]
+    assert report["overruns"][0]["overrun_micro"] == 112_500 and report["overruns"][0]["ratio"] == 2.125
+    assert report["overruns_by_endpoint"] == [{
+        "endpoint_id": "openrouter.video-gen.wan-3-0.from_text", "provider": "openrouter",
+        "tasks": 1, "overrun_micro": 112_500, "max_ratio": 2.125}]
+    assert [s["call_id"] for s in report["absorbed_shortfalls"]] == ["over-1"]
+    assert report["absorbed_shortfall_micro"] == 92_500

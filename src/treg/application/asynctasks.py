@@ -191,10 +191,18 @@ async def _finish(call_id: str, outcome: str, document: object | None, now) -> s
         if row is None or row.status != asynctasks.PENDING:
             return "noop"
         if outcome == "success":
-            raw = settlement.settle(row.settlement_basis, {"terminal": document})
+            evidence = {"terminal": document}
+            raw = settlement.settle(row.settlement_basis, evidence)
+            unobserved = (row.settlement_basis["amount"]["kind"] == "usage"
+                          and settlement.usage_evidence(row.settlement_basis, evidence) is None)
+            if unobserved:
+                row.error = "usage field missing from the terminal response; settled at the reserve"
+                log.error("ASYNC USAGE UNOBSERVED: call %s on %s succeeded but %s carried no usage "
+                          "figure; settled at the reserve — check the provider's response shape",
+                          row.call_id, row.provider, row.endpoint_id)
             row.settled_micro = await ledger.settle_in_transaction(db, row.call_id, raw, meta={
                 "provider": row.provider, "cost_source": row.settlement_basis["amount"]["kind"],
-                "async_task": True,
+                "async_task": True, **({"reconcile_review": True} if unobserved else {}),
             })
             row.status = asynctasks.SETTLED
         elif outcome == "failure":

@@ -262,9 +262,9 @@ async def catalog_endpoint_access(
         est = _platform_estimate_micro(cost, {})
         low = cost.get("usd_min")  # a price table: the figure depends on model/resolution/duration
         if isinstance(low, (int, float)) and low < ledger.usd(est):
-            price = (f"${low:g}-${ledger.usd(est):g} by model, resolution and duration; the whole "
-                     f"${ledger.usd(est):g} ceiling is held until the task finishes, then you pay "
-                     f"the provider's reported cost" if cost.get("settle") == "usage" else
+            price = (f"${low:g}-${ledger.usd(est):g} by model, resolution and duration (the "
+                     f"matching rate-card row is held; you pay the provider's reported cost, which "
+                     f"can exceed it)" if cost.get("settle") == "usage" else
                      f"${low:g}-${ledger.usd(est):g} by model, resolution and duration (reserved at "
                      f"the table row your request matches)")
         else:

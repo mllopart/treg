@@ -181,7 +181,14 @@ an ERROR-level alert: an outcome nobody observed is the platform's cost, never t
 provider that silently changed its status field shows up as absorbed timeouts in
 `reconcile.async_task_settlement` (`absorbed_timeouts`) rather than as a quiet overcharge.
 Extraction failure at submission is the same shape: the row carries the error and reaches that
-deadline untouched. When the pending row itself cannot be persisted, the request path releases the
+deadline untouched. A `settle: usage` row reserves what its rate-card table says THIS request costs
+(the matrix ceiling had made a $0.05 call demand a $6 balance) and settles the provider's reported
+figure, which may exceed the reserve: the ledger takes the difference from the balance, the next
+reserve is the gate, and `reconcile.async_task_settlement` lists every such `overrun` (the team
+paid it) and every settle whose `block_shortfall_micro` > 0 (`absorbed_shortfalls`: the platform
+ate what the team's blocks could not cover). A success whose terminal response carries no usage
+figure settles at the reserve with `reconcile_review` and an ERROR alert, never at the ceiling.
+When the pending row itself cannot be persisted, the request path releases the
 hold with reason `async_task_not_recorded` and logs an ERROR alert — the same doctrine, since nobody
 will observe that task's outcome. A 2xx whose envelope fails the endpoint's `expect` rule is not a
 task at all and releases through the ordinary response-time path. The only usage unit real traffic has settled is `usd` (OpenRouter's
