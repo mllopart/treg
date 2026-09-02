@@ -1,11 +1,15 @@
 provider: openrouter
-# Terms check (2026-09-02, https://openrouter.ai/terms, last updated 2026-08-31): section 7(4)
-# forbids using the Service "for purposes of reselling API access to Models or otherwise developing
-# a competing service", and 7(14) forbids selling or transferring the access granted. Serving these
-# rows on treg's own key, metered to a team's balance, is reselling API access under that wording.
-# Platform metering therefore needs a written agreement with OpenRouter before launch; without one
-# this provider must stay BYOK-only (TREG_PLATFORM_PROVIDERS without "openrouter"). Section 6.1
-# defers output ownership to each Model's own terms, which pass through to the caller unchanged.
+# Terms check (2026-09-02). Standard ToS (https://openrouter.ai/terms, updated 2026-08-31): section
+# 5.1/5.2 contemplate incorporating the Service into "your own products and services" and serving
+# "your customers" with the Model Terms flowed down to them, but 7(4) forbids using the Service "for
+# purposes of reselling API access to Models or otherwise developing a competing service" and 7(14)
+# forbids selling or transferring the access granted. A metered credential-injecting relay of the raw
+# API sits on that line. The Enterprise Access Agreement (https://openrouter.ai/terms-of-service-enterprise,
+# 2026-06-22) is the sanctioned path: 2.1(a)(ii) licenses "making the Service available to Customer's
+# End Customers" (order form, minimum spend; 2.3.7 still bars raw resale, so confirm the metered-proxy
+# shape in writing). Until that agreement exists this provider stays BYOK-only (TREG_PLATFORM_PROVIDERS
+# without "openrouter"). Conditions either way: never expose the key (3.2), flow Model Terms down to
+# teams (5.1/5.2), block Restricted Models (5.7); output rights are each Model's own terms (6.1).
 source:
   docs: https://openrouter.ai/docs/guides/overview/multimodal/video-generation
   curated: 2026-09-02
