@@ -83,12 +83,15 @@ def _http_upstream_response(upstream: UpstreamResponse) -> StreamingResponse:
     return response
 
 
-def _attach_async_descriptor(upstream: UpstreamResponse, context) -> None:
-    """Attach static catalog metadata before Starlette starts the upstream body stream."""
+def _attach_async_descriptor(upstream: UpstreamResponse, context, rest: str = "") -> None:
+    """Attach static catalog metadata before Starlette starts the upstream body stream.
+
+    An idempotent replay returns before marketplace resolution, so the endpoint is taken from the
+    path itself: a `--await` retry of a stored submission must still learn how to poll the task
+    that is already running, or it would print the body and stop."""
     marketplace = context.marketplace
-    if marketplace is None:
-        return
-    endpoint = catalog_store.load().by_id.get(marketplace.endpoint_id)
+    endpoint_id = marketplace.endpoint_id if marketplace is not None else rest.split("?", 1)[0]
+    endpoint = catalog_store.load().by_id.get(endpoint_id)
     descriptor = endpoint.get("async") if endpoint else None
     if not descriptor:
         return
@@ -323,7 +326,7 @@ async def call_tool(
     request.state.call_ref = context.call_ref
     try:
         upstream = await execute_call(context, request.app.state.http)
-        _attach_async_descriptor(upstream, context)
+        _attach_async_descriptor(upstream, context, rest)
         return _http_upstream_response(upstream)
     except CallFailure as exc:
         raise _translate_call_failure(exc) from exc

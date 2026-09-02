@@ -167,7 +167,10 @@ Pending `AsyncTaskRecord` holds are excluded from this short request reaper. The
 
 `domain/money/settlement.py` is the single data-derived calculation seam. Reserve time freezes a basis
 with `when: response|terminal` and `amount.kind: table|usage|observed`; `settle(basis, evidence)` returns
-raw integer micro-USD and never writes the ledger. Both the normal response path and the async worker
+raw integer micro-USD and never writes the ledger. `table_amount_micro` bounds a `times` multiplier by
+the field's declared `min`/`max` (finite, positive when no minimum is declared): an out-of-range value
+matches no row and prices at the fallback, so a caller can neither reserve zero nor bill past the
+validated ceiling. Both the normal response path and the async worker
 use it. Provider differences remain in catalog YAML; there are no provider billing adapters.
 
 For a tier-4 endpoint carrying `async`, a successful submission keeps its hold and writes an
@@ -175,7 +178,10 @@ For a tier-4 endpoint carrying `async`, a successful submission keeps its hold a
 applied to, so the settlement replays from the row alone. BYOK calls create neither hold nor task
 row. The worker claims due rows with `FOR UPDATE SKIP LOCKED`, polls through the normal credential
 injector (a static poll's parameter rides as `query_items` or a path substitution; the relay forwards
-no URL-embedded query, which once left MiniMax v1 polls empty), settles success, fully releases failure and backs off nonterminal states. **At the 24-hour
+no URL-embedded query, which once left MiniMax v1 polls empty; a path parameter is substituted by its
+declared location and percent-encoded; the body is capped at `MAX_POLL_BODY_BYTES`), takes terminal
+evidence only from a 2xx poll (an error envelope that happens to say `succeeded` backs off like any
+other non-2xx, the same rule the CLI applies), settles success, fully releases failure and backs off nonterminal states. **At the 24-hour
 deadline it releases the hold in full**, marks the row `timed_out` with `reconcile_review`, and logs
 an ERROR-level alert: an outcome nobody observed is the platform's cost, never the customer's, and a
 provider that silently changed its status field shows up as absorbed timeouts in

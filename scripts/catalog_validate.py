@@ -229,6 +229,8 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
                     fail(errors, rwhere, f"when field '{field}' must be required or declare a default")
                 elif isinstance(expected, (dict, list)) or expected is None:
                     fail(errors, rwhere, f"when field '{field}' must compare a scalar value")
+                elif isinstance(expected, float) and not math.isfinite(expected):
+                    fail(errors, rwhere, f"when field '{field}' must compare a finite number")
                 else:
                     if isinstance(spec.get("enum"), list) and expected not in spec["enum"]:
                         fail(errors, rwhere, f"when value {expected!r} is not in input enum for '{field}'")
@@ -329,6 +331,14 @@ def check_async_descriptor(descriptor: object, where: str, provider: str,
             fail(errors, where, f"{label} must name an input field in pathParams or queryParams")
         elif target is not None and f"{location}.{field}" not in _input_fields(target.get("input")):
             fail(errors, where, f"{label} target does not declare input field '{location}.{field}'")
+        elif target is not None:
+            # The declared location must agree with the target path: a pathParams id needs exactly
+            # one `{name}` placeholder, a queryParams id none — the worker substitutes by location.
+            marker, path = "{" + field + "}", str(target.get("path") or "")
+            if location == "pathParams" and path.count(marker) != 1:
+                fail(errors, where, f"{label} pathParams '{field}' needs exactly one {marker} in the target path")
+            if location == "queryParams" and marker in path:
+                fail(errors, where, f"{label} queryParams '{field}' must not appear as {marker} in the target path")
         if fetch and (not isinstance(value.get("value_from"), str)
                       or not JSON_PATH.fullmatch(value["value_from"])):
             fail(errors, where, f"{label}.value_from must be a dotted terminal-response JSON path")
@@ -411,8 +421,8 @@ def check_async_descriptor(descriptor: object, where: str, provider: str,
             fail(errors, where, "async.result.ttl_note must be non-empty when present")
 
     interval = descriptor.get("interval")
-    if (not isinstance(interval, (int, float)) or isinstance(interval, bool) or interval <= 0):
-        fail(errors, where, "async.interval must be a positive number of seconds")
+    if not _finite_number(interval) or interval <= 0:
+        fail(errors, where, "async.interval must be a positive finite number of seconds")
     if not isinstance(cost, dict) or cost.get("type") != "per_success":
         fail(errors, where, "an endpoint with async must have cost.type per_success")
 
@@ -762,6 +772,10 @@ def main(argv: list[str]) -> int:
             if effective_async is not None:
                 check_async_descriptor(effective_async, where, str(service), endpoint_index,
                                        cost, errors)
+            elif isinstance(cost, dict) and cost.get("settle") == "usage":
+                # Usage evidence is read from the TERMINAL response by the worker; a synchronous
+                # response path has no consumer for it and would silently settle the reserve.
+                fail(errors, where, "cost.settle 'usage' requires an async descriptor")
             if ep.get("verified"):
                 ex = ep.get("example_response")
                 if not ex:

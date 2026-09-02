@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 import httpx
+from urllib.parse import quote
 from sqlalchemy import select
 
 from .. import archive, oauth_providers
@@ -28,6 +29,8 @@ log = logging.getLogger("treg.asynctasks")
 DEFAULT_LIMIT = 50
 GLOBAL_CONCURRENCY = 8
 PROVIDER_CONCURRENCY = 2
+# Terminal task JSON is small; a provider that streams more than this is not answering a poll.
+MAX_POLL_BODY_BYTES = 2 * 1024 * 1024
 
 
 def _json_value(value: object) -> object:
@@ -103,8 +106,7 @@ async def views_for(org_id: int, call_ids: list[str]) -> dict[str, dict]:
             view["result_url"] = found.get("result_url")
             fetch = found.get("fetch")
             if fetch:
-                view["fetch_command"] = (
-                    f"treg call {fetch['endpoint']} -p {fetch['name']}={fetch['value']}")
+                view["fetch_command"] = asynctasks.fetch_command(fetch)
         views[row.call_id] = view
     return views
 
@@ -149,12 +151,16 @@ def _poll_target(row: AsyncTaskRecord) -> tuple[str, str, list[tuple[str, str]]]
     query: list[tuple[str, str]] = []
     param = poll.get("param") or {}
     if param:
-        name, value = str(param.get("name") or ""), row.task_id
-        marker = "{" + name + "}"
-        if marker in url:
-            url = url.replace(marker, str(value))
+        # The declared location decides, never a coincidental placeholder; a path value is
+        # percent-encoded so a provider-controlled task id cannot add URL syntax.
+        name, value = str(param.get("name") or ""), str(row.task_id)
+        if param.get("in") == "pathParams":
+            marker = "{" + name + "}"
+            if marker not in url:
+                raise RuntimeError(f"poll endpoint {endpoint_id!r} has no {marker} placeholder")
+            url = url.replace(marker, quote(value, safe=""))
         else:
-            query.append((name, str(value)))
+            query.append((name, value))
     return str(endpoint.get("method") or "GET"), url, query
 
 
@@ -179,7 +185,12 @@ async def _poll(row: AsyncTaskRecord, client: httpx.AsyncClient) -> tuple[int, b
                               body_stream=empty, has_body=False)
     response = await relay(request, url, tool, [], client, force_identity=True)
     try:
-        chunks = [chunk async for chunk in response.body_stream]
+        chunks, size = [], 0
+        async for chunk in response.body_stream:
+            size += len(chunk)
+            if size > MAX_POLL_BODY_BYTES:
+                raise ValueError(f"poll response exceeds {MAX_POLL_BODY_BYTES} bytes")
+            chunks.append(chunk)
         return response.status, b"".join(chunks)
     finally:
         await response.close()
@@ -247,7 +258,11 @@ async def _process(call_id: str, client: httpx.AsyncClient) -> str:
         snapshot = row.model_copy()
     try:
         status, body = await _poll(snapshot, client)
-        if status >= 500:
+        if not 200 <= status < 300:
+            # Only a successful poll is evidence. A 404 or 401 body that happens to carry
+            # "status": "succeeded" is an error envelope, not a terminal state; the CLI treats
+            # every non-2xx the same way, and money must not depend on an error page's fields.
+            log.warning("async poll for call %s returned HTTP %s; backing off", call_id, status)
             return await _finish(call_id, "progress", None, now)
         document = json.loads(body)
         outcome = asynctasks.classify_terminal(snapshot.descriptor, document)

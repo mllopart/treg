@@ -621,13 +621,14 @@ silently price the wrong field. Every `when` field must be required or declare `
 ones; the validator rejects a later condition shadowed by an earlier subset, duplicate conditions,
 unknown row/fallback keys, non-finite values, values outside input enum/min/max, and simultaneous
 `cost.value` plus `cost.table`. `fallback` is a hand-written, explained global upper bound, checked
-against every row's maximum computable price. With `settle: table`, an unmatched successful call
-reserves and settles fallback. With `settle: usage`, every call reserves fallback even when a table
-row matches; the table is an expected quote and terminal usage is authoritative. This is the safe
-interpretation after observed OpenRouter minimum/fee behavior exceeded a matching SKU quote.
-`settle: usage` requires exactly a dotted `usage.path` and supported `usage.unit`; `settle: table`
-rejects a stray usage block. At this contract stage the loader preserves and serves the table,
-while billing still does not evaluate it; platform settlement belongs to the later money phase.
+against every row's maximum computable price. A `times` value outside the field's declared range
+(or non-finite, or non-positive when no minimum is declared) matches no row and prices at the
+fallback, so a request cannot reserve zero or bill past the ceiling. With `settle: table`, the
+matched row is reserved and settled (fallback when unmatched). With `settle: usage`, the matched
+row is reserved as the rate-card estimate and the terminal `usage.path` figure settles, which may
+exceed the reserve (OpenRouter's unpublished minimums); `settle: usage` therefore requires an async
+descriptor, exactly a dotted `usage.path` and a supported `usage.unit`, and `settle: table` rejects
+a stray usage block. The money fragment describes the settlement itself.
 
 `value` + `currency` + `per` answer *how much*; `type` + `unit` answer *per what*; `source` +
 `source_url` + `checked` + `confidence` answer *says who, and how sure*. All four questions have to

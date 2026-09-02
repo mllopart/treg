@@ -4917,7 +4917,7 @@ createApp({
       if(t.status==='pending') return 'the task is still running upstream; the hold settles or is refunded when it finishes';
       if(t.status==='settled') return 'the task succeeded; charged '+this.money(t.settled_micro)+(t.completed_at?' at '+new Date(t.completed_at+(/(Z|[+-]\d{2}:?\d{2})$/.test(t.completed_at)?'':'Z')).toLocaleString():'');
       if(t.status==='released') return 'the provider reported the task failed; the whole hold was refunded'+(t.error?' — '+t.error:'');
-      if(t.status==='timed_out') return 'no terminal state within 24 hours; settled at the reserved amount and flagged for review';
+      if(t.status==='timed_out') return 'no terminal state within 24 hours; the whole hold was refunded and treg absorbed any upstream charge (flagged for review)';
       return t.status;
     },
     taskArtifactTitle(t){ return 'the provider\'s download URL — time-limited'+(t.ttl_note?' (lifetime: '+t.ttl_note+')':'')+', download promptly'+(t.completed_at?'; generated '+this.when(t.completed_at):''); },

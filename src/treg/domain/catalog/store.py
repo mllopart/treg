@@ -244,15 +244,21 @@ def _table_floor(cost: object, input_schema: object) -> float | None:
     if not isinstance(cost, dict) or not isinstance(cost.get("table"), list):
         return None
     fields: dict[str, dict] = {}
+
+    def add(items: dict, prefix: str) -> None:  # nested objects (Replicate `input.*`) included
+        for name, spec in items.items():
+            if isinstance(spec, dict):
+                fields[f"{prefix}.{name}"] = spec
+                if isinstance(spec.get("properties"), dict):
+                    add(spec["properties"], f"{prefix}.{name}")
+
     if isinstance(input_schema, dict):
         for location in ("pathParams", "queryParams", "body"):
             block = input_schema.get(location)
             if isinstance(block, dict) and isinstance(block.get("properties"), dict):
                 block = block["properties"]
             if isinstance(block, dict):
-                for name, spec in block.items():
-                    if isinstance(spec, dict):
-                        fields[f"{location}.{name}"] = spec
+                add(block, location)
     floors = []
     for row in cost["table"]:
         if not isinstance(row, dict) or not isinstance(row.get("value"), (int, float)):

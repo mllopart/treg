@@ -82,16 +82,51 @@ def _with_defaults(request: dict, input_schema: dict) -> dict:
     return out
 
 
+def _spec_for(input_schema: dict, dotted: str) -> dict:
+    """The input field declaration behind a location-qualified dotted path (`body.input.duration`)."""
+    parts = dotted.split(".")
+    block = input_schema.get(parts[0]) if isinstance(input_schema, dict) else None
+    if isinstance(block, dict) and isinstance(block.get("properties"), dict):
+        block = block["properties"]
+    spec: dict = {}
+    for name in parts[1:]:
+        if not isinstance(block, dict):
+            return {}
+        spec = block.get(name) if isinstance(block.get(name), dict) else {}
+        block = spec.get("properties")
+    return spec
+
+
+def _bounded_multiplier(value: object, spec: dict) -> float | None:
+    """A `times` value the table may multiply by: a finite number inside the field's declared
+    range (positive when no minimum is declared). Anything else is None — the row does not price
+    that request and the explicit fallback does, so a caller cannot reserve zero with
+    `duration: 0` or bill past the validated ceiling with `duration: 100`."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+        return None
+    low, high = spec.get("min"), spec.get("max")
+    if isinstance(low, (int, float)) and not isinstance(low, bool) and value < low:
+        return None
+    if isinstance(high, (int, float)) and not isinstance(high, bool) and value > high:
+        return None
+    if not isinstance(low, (int, float)) and value <= 0:
+        return None
+    return float(value)
+
+
 def table_amount_micro(cost: dict, request: dict, input_schema: dict, unit_micro: int) -> int:
     """Evaluate the frozen first-match table, falling back to its explicit global upper bound."""
     values = _with_defaults(request, input_schema)
     for row in cost.get("table") or []:
         when = row.get("when") or {}
         if all(_path(values, field) == expected for field, expected in when.items()):
-            multiplier = _path(values, row["times"]) if row.get("times") else 1
-            if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool):
+            if not row.get("times"):
+                return _micro(float(row["value"]), unit_micro)
+            multiplier = _bounded_multiplier(
+                _path(values, row["times"]), _spec_for(input_schema, str(row["times"])))
+            if multiplier is None:
                 break
-            return _micro(float(row["value"]) * float(multiplier), unit_micro)
+            return _micro(float(row["value"]) * multiplier, unit_micro)
     return _micro(float(cost["fallback"]["value"]), unit_micro)
 
 

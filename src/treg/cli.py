@@ -2258,6 +2258,8 @@ def cmd_tool_update(args, cfg) -> None:
 # `test_import_lightness` and an import-linter contract, so the CLI and the settlement worker can
 # never disagree about what "done" means.
 from .domain.asynctasks import artifact as _async_artifact  # noqa: E402
+from .domain.asynctasks import fetch_command as _async_fetch_command  # noqa: E402
+from .domain.asynctasks import shown as _shown  # noqa: E402
 from .domain.asynctasks import classify_terminal as _classify_terminal  # noqa: E402
 from .domain.asynctasks import json_path as _json_path  # noqa: E402
 
@@ -2359,10 +2361,7 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
                         "response": response, "status": status,
                         "error": f"the terminal response has no {value_from!r} for result retrieval"}
             else:
-                fetch = found["fetch"]
-                result["fetch_command"] = (
-                    f"treg call {fetch['endpoint']} -p "
-                    f"{shlex.quote(fetch['name'] + '=' + fetch['value'])}")
+                result["fetch_command"] = _async_fetch_command(found["fetch"])
             if found["ttl_note"]:
                 result["ttl_note"] = found["ttl_note"]
             return result
@@ -2371,8 +2370,9 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
                     "response": response, "status": status}
         if status not in warned:
             warned.add(status)
-            _clock_report(clock, f"warning: unknown async status {status!r}; continuing to wait")
-        _clock_report(clock, f"async task {task_id}: {status} ({int(clock.monotonic() - start)}s elapsed)")
+            _clock_report(clock, f"warning: unknown async status {_shown(status)!r}; continuing to wait")
+        _clock_report(clock, f"async task {_shown(task_id)}: {_shown(status)} "
+                             f"({int(clock.monotonic() - start)}s elapsed)")
 
 
 def _print_raw_response(response: httpx.Response) -> None:
@@ -2491,7 +2491,7 @@ def cmd_call(args, cfg) -> None:
         else:
             recovery = ""
         if task_id not in (None, ""):
-            print(f"async task submitted: {task_id}", file=sys.stderr)
+            print(f"async task submitted: {_shown(task_id)}", file=sys.stderr)
             if recovery:
                 print(f"resume: {recovery}", file=sys.stderr)
         if reserved := submission.headers.get("X-Treg-Cost-Micro"):

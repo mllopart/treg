@@ -432,3 +432,84 @@ async def test_reconcile_lists_usage_overruns_and_platform_absorbed_shortfalls(c
         "tasks": 1, "overrun_micro": 112_500, "max_ratio": 2.125}]
     assert [s["call_id"] for s in report["absorbed_shortfalls"]] == ["over-1"]
     assert report["absorbed_shortfall_micro"] == 92_500
+
+
+def test_times_multiplier_is_bounded_by_the_input_schema():
+    """A caller cannot reserve zero with duration 0 or bill past the ceiling with duration 100:
+    an out-of-range, non-finite or non-positive multiplier matches no row and prices at the fallback."""
+    cost = {"table": [{"when": {"body.input.resolution": "480p"}, "value": 0.05,
+                       "times": "body.input.duration"}],
+            "fallback": {"value": 6.0}}
+    schema = {"body": {"input": {"type": "object", "properties": {
+        "resolution": {"type": "string"},
+        "duration": {"type": "integer", "min": 2, "max": 30}}}}}
+
+    def price(duration):
+        return settlement.table_amount_micro(
+            cost, {"body": {"input": {"resolution": "480p", "duration": duration}}}, schema, 1_000_000)
+
+    assert price(2) == 100_000 and price(30) == 1_500_000
+    assert price(0) == price(-3) == price(31) == price(100) == price(float("nan")) == 6_000_000
+    assert price(float("inf")) == 6_000_000 and price("5") == 250_000  # strings coerce by type
+
+
+async def test_worker_ignores_terminal_looking_fields_on_error_responses(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "succeeded", "output": ["u"]})
+
+    async def fake_poll(row, client):
+        return 404, json.dumps({"status": "succeeded", "output": ["u"]}).encode()
+
+    monkeypatch.setattr(task_app, "_poll", fake_poll)
+    result = await task_app.settle_due()
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        hold = await db.get(Hold, call_id)
+    assert result.backed_off == 1 and row.status == "pending" and hold is not None
+
+
+def test_poll_target_follows_the_declared_location_and_encodes_path_values():
+    row = AsyncTaskRecord(
+        call_id="p-1", org_id=1, provider="minimax", endpoint_id="minimax.video-gen.h3.generate",
+        task_id="a?view=admin/../x", reserved_micro=1, next_check_at=utcnow_naive(),
+        descriptor={"poll": {"endpoint": "minimax.video-gen.v2.task.status",
+                             "param": {"in": "pathParams", "name": "task_id"}}})
+    method, url, query = task_app._poll_target(row)
+    assert (method, query) == ("GET", [])
+    assert url == "https://api.minimax.io/v2/query/video_generation/a%3Fview%3Dadmin%2F..%2Fx"
+    row.descriptor = {"poll": {"endpoint": "minimax.video-gen.task.status",
+                               "param": {"in": "pathParams", "name": "task_id"}}}
+    with pytest.raises(RuntimeError):
+        task_app._poll_target(row)  # declared as a path parameter, but the target has no placeholder
+
+
+def test_fetch_command_and_shown_neutralise_provider_strings():
+    assert asynctasks.fetch_command({"endpoint": "minimax.video-gen.result.retrieve", "name": "file_id",
+                                     "value": "x; touch /tmp/pwned"}) == \
+        "treg call minimax.video-gen.result.retrieve -p 'file_id=x; touch /tmp/pwned'"
+    assert asynctasks.shown("ok-123") == "ok-123"
+    assert asynctasks.shown("id\nresume: treg call evil") == "id\\nresume: treg call evil"
+    assert asynctasks.shown("\x1b]52;c;aGk=\x07") == "\\x1b]52;c;aGk=\\x07"
+
+
+def test_price_floor_reads_nested_input_fields():
+    from treg.domain.catalog import store
+    cat = store.load()
+    seedance = cat.cost_view(cat.by_id["replicate.video-gen.seedance-1-lite"]["cost"], "replicate")
+    assert seedance["usd_min"] == 0.072  # 480p at the declared 4-second minimum, not 1 second
+
+
+async def test_idempotent_replay_of_an_async_submission_keeps_the_descriptor(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    async def fake_relay(*args, **kwargs):
+        return _response(201, {"id": "prediction-idem", "urls": {"get": "https://api.replicate.com/v1/predictions/i"}})
+
+    monkeypatch.setattr(call_service, "relay", fake_relay)
+    body = {"input": {"prompt": "A kite.", "num_outputs": 1, "aspect_ratio": "1:1", "output_format": "webp"}}
+    first = await clients.post(f"/call/{EP}", json=body, headers={"Idempotency-Key": "gen-1"})
+    assert first.status_code == 201 and "x-treg-async" in {k.lower() for k in first.headers}
+    again = await clients.post(f"/call/{EP}", json=body, headers={"Idempotency-Key": "gen-1"})
+    assert again.status_code == 201 and again.headers.get("X-Treg-Idempotent-Replay") == "true"
+    assert again.headers.get("x-treg-async") == first.headers.get("x-treg-async")

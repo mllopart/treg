@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
@@ -94,6 +95,22 @@ def artifact(descriptor: dict, terminal: object) -> dict:
         view["fetch"] = {"endpoint": str(rule["fetch"]), "name": str(fetch_rule["name"]),
                          "value": str(value)}
     return view
+
+
+def fetch_command(fetch: dict) -> str:
+    """The `treg call` line that retrieves a fetch-mode artifact, shell-safe: the value is the
+    provider's, so it is quoted wherever a human might paste the line (CLI stderr, the dashboard)."""
+    return f"treg call {shlex.quote(str(fetch['endpoint']))} -p " \
+           f"{shlex.quote(str(fetch['name']) + '=' + str(fetch['value']))}"
+
+
+def shown(value: object, limit: int = 120) -> str:
+    """A provider string made safe to print on a terminal: control characters and escape bytes
+    are shown as escapes so a task id or status value cannot forge lines or drive the terminal."""
+    text = str(value)
+    text = "".join(ch if ch.isprintable() and ch not in "\x7f" else ch.encode("unicode_escape").decode()
+                   for ch in text)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def next_check(now: datetime, attempts: int) -> datetime:

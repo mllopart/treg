@@ -85,15 +85,15 @@ def _async_errors(descriptor, cost=None, endpoint_index=None):
     errors: list[str] = []
     default_index = {
         "demo.video-gen.status": {
-            "provider": "demo", "kind": "utility", "method": "GET",
+            "provider": "demo", "kind": "utility", "method": "GET", "path": "/tasks/{task_id}",
             "input": {"pathParams": {"task_id": {"type": "string", "required": True}}},
         },
         "demo.video-gen.content": {
-            "provider": "demo", "kind": "utility", "method": "GET",
+            "provider": "demo", "kind": "utility", "method": "GET", "path": "/content/{video_id}",
             "input": {"pathParams": {"video_id": {"type": "string", "required": True}}},
         },
         "other.video-gen.status": {
-            "provider": "other", "kind": "utility", "method": "GET",
+            "provider": "other", "kind": "utility", "method": "GET", "path": "/tasks/{task_id}",
             "input": {"pathParams": {"task_id": {"type": "string", "required": True}}},
         },
     }
@@ -167,7 +167,7 @@ def test_async_descriptor_accepts_both_poll_and_result_modes():
      "path mode allows only path and ttl_note"),
     (lambda d: d.update(result={"path": "url", "ttl_note": ""}),
      "ttl_note must be non-empty"),
-    (lambda d: d.update(interval=0), "async.interval must be a positive number"),
+    (lambda d: d.update(interval=0), "async.interval must be a positive finite number"),
 ])
 def test_async_descriptor_rejects_each_invalid_contract_shape(mutate, message):
     descriptor = _valid_async()
@@ -365,3 +365,50 @@ def test_validator_checks_the_endpoint_descriptor_that_replaces_the_provider_def
 
     assert validator.main(["tikhub"]) == 0
     assert "0 error(s)" in capsys.readouterr().out
+
+
+def test_async_param_location_must_agree_with_the_target_path(tmp_path, monkeypatch, capsys):
+    """The worker substitutes by declared location: a pathParams id needs exactly one placeholder."""
+    (tmp_path / "capabilities.yaml").write_text(
+        "platforms: {video-gen: Video}\ncapabilities: {video-gen.from_text: Generate, video-gen.task.status: Poll}\n")
+    (tmp_path / "fx.yaml").write_text("credit_rates_usd: {}\n")
+    (tmp_path / "tikhub.yaml").write_text(
+        "provider: tikhub\n"
+        "source: {docs: https://example.com/docs}\n"
+        "endpoints:\n"
+        "  - id: tikhub.video-gen.from-text\n"
+        "    capability: video-gen.from_text\n    platform: video-gen\n"
+        "    method: POST\n    path: /generate\n    summary: Generate a video\n"
+        "    input: {body: {prompt: {type: string, required: true}}}\n"
+        "    async:\n"
+        "      id_from: id\n"
+        "      poll: {endpoint: tikhub.video-gen.task.status, param: {in: pathParams, name: id}}\n"
+        "      status: {path: status, success: [done], failure: [failed]}\n"
+        "      result: {path: url}\n"
+        "      interval: 10\n"
+        "    cost: {type: per_success, table: [{when: {body.prompt: a}, value: 0.1}],\n"
+        "           fallback: {value: 0.1, note: flat}, currency: USD, settle: usage,\n"
+        "           usage: {path: usage.cost, unit: usd}, source: docs,\n"
+        "           source_url: https://example.com/pricing, checked: 2026-09-01, confidence: documented}\n"
+        "  - id: tikhub.video-gen.task.status\n"
+        "    kind: utility\n    capability: video-gen.task.status\n    platform: video-gen\n"
+        "    method: GET\n    path: /tasks\n    summary: Poll\n"
+        "    input: {pathParams: {id: {type: string, required: true}}}\n"
+        "    cost: {type: free, value: 0, currency: USD, unit: call}\n")
+    monkeypatch.setattr(validator, "CATALOG", tmp_path)
+    assert validator.main(["tikhub"]) != 0
+    out = capsys.readouterr().out
+    assert "needs exactly one {id} in the target path" in out
+
+
+def test_usage_settlement_requires_an_async_descriptor_and_finite_interval():
+    cost = _valid_table()
+    cost.update(settle="usage", usage={"path": "usage.cost", "unit": "usd"})
+    errors: list[str] = []
+    validator.check_cost_table(cost, _valid_input(), "x", errors)
+    assert errors == []  # the block itself is fine; the pairing is checked at the endpoint level
+    descriptor = _valid_async()
+    descriptor["interval"] = float("nan")
+    errors = []
+    validator.check_async_descriptor(descriptor, "x", "demo", {}, {"type": "per_success"}, errors)
+    assert any("finite" in e for e in errors)
