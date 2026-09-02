@@ -28,7 +28,7 @@ FEEDJOLT = OAuthProvider(
     setup_note=(
         "REST calls are included in the plan, not billed per call. "
         "GET /workspaces is the probe. Do not use GET /health — it is unauthenticated. "
-        "A garbage Bearer or X-API-Key returns 401 {\"detail\":\"Invalid or revoked API key\"}."
+        "A garbage Bearer/X-API-Key returns 401 {\"detail\":\"Invalid or revoked API key\"}."
     ),
     auth_uri="", token_uri="",
     scopes={},
