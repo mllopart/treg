@@ -174,7 +174,8 @@ For a tier-4 endpoint carrying `async`, a successful submission keeps its hold a
 `AsyncTaskRecord` whose `settlement_basis` freezes the whole price rule with the request it was
 applied to, so the settlement replays from the row alone. BYOK calls create neither hold nor task
 row. The worker claims due rows with `FOR UPDATE SKIP LOCKED`, polls through the normal credential
-injector, settles success, fully releases failure and backs off nonterminal states. **At the 24-hour
+injector (a static poll's parameter rides as `query_items` or a path substitution; the relay forwards
+no URL-embedded query, which once left MiniMax v1 polls empty), settles success, fully releases failure and backs off nonterminal states. **At the 24-hour
 deadline it releases the hold in full**, marks the row `timed_out` with `reconcile_review`, and logs
 an ERROR-level alert: an outcome nobody observed is the platform's cost, never the customer's, and a
 provider that silently changed its status field shows up as absorbed timeouts in

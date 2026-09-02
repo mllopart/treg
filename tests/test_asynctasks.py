@@ -351,3 +351,32 @@ def test_artifact_reads_both_result_modes():
                               "name": "file_id", "value": "f-1"}
     assert asynctasks.artifact(by_fetch, {"status": "Success"})["fetch"] is None
     assert asynctasks.artifact({}, {"anything": 1})["result_url"] is None
+
+
+async def test_query_parameter_poll_travels_as_query_items(monkeypatch):
+    """MiniMax v1 polls `GET /v1/query/video_generation?task_id=…`. The relay builds the upstream
+    query from `query_items` only, so the id must ride there (live 2026-09-02: appended to the URL it
+    arrived empty and the provider answered 2013 "invalid params" on every tick)."""
+    seen = {}
+
+    async def fake_relay(request, url, tool, *args, **kwargs):
+        seen["url"], seen["query"] = url, request.query_items
+
+        async def stream():
+            yield b'{"status": "Success"}'
+
+        async def close():
+            return None
+
+        return UpstreamResponse(200, (), stream(), close)
+
+    monkeypatch.setattr(task_app, "relay", fake_relay)
+    row = AsyncTaskRecord(
+        call_id="q-1", org_id=1, provider="minimax", endpoint_id="minimax.video-gen.from_text",
+        task_id="437372532953204", reserved_micro=1, next_check_at=utcnow_naive(),
+        descriptor={"poll": {"endpoint": "minimax.video-gen.task.status",
+                             "param": {"in": "queryParams", "name": "task_id"}}})
+    status, body = await task_app._poll(row, None)
+    assert status == 200 and body == b'{"status": "Success"}'
+    assert seen["url"] == "https://api.minimax.io/v1/query/video_generation"
+    assert seen["query"] == (("task_id", "437372532953204"),)

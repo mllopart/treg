@@ -7,7 +7,6 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import timedelta
-from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy import select
@@ -164,8 +163,10 @@ async def _poll(row: AsyncTaskRecord, client: httpx.AsyncClient) -> tuple[int, b
     if provider is None:
         raise RuntimeError(f"provider {row.provider!r} is not registered")
     method, url, query = _poll_target(row)
-    if query:
-        url += ("&" if "?" in url else "?") + urlencode(query)
+    # The query travels as `query_items`: the relay composes the upstream URL from those (it
+    # forwards a URL's own query string nowhere), so a query-parameter poll (MiniMax v1
+    # `?task_id=`) appended to the URL reached the provider empty — "invalid params" until the
+    # 24-hour deadline. Path-parameter polls never showed it. Live 2026-09-02.
     tool = Tool(org_id=row.org_id, name=row.endpoint_id, owner="treg-worker",
                 base_url=provider.base_url, host=_host_of(provider.base_url),
                 bindings=_platform_bindings(provider))
@@ -174,7 +175,7 @@ async def _poll(row: AsyncTaskRecord, client: httpx.AsyncClient) -> tuple[int, b
         if False:
             yield b""
 
-    request = UpstreamRequest(method=method, raw_headers=(), query_items=(),
+    request = UpstreamRequest(method=method, raw_headers=(), query_items=tuple(query),
                               body_stream=empty, has_body=False)
     response = await relay(request, url, tool, [], client, force_identity=True)
     try:
