@@ -1,4 +1,13 @@
 provider: replicate
+# Terms check (2026-09-02, https://replicate.com/terms, last updated 2026-04-01): the use right is
+# "non-sublicensable" (2.1) and 2.7(c)(iii) forbids to "sell, sublicense, ... distribute, ... or
+# otherwise make available any Services to any person"; 2.3(b) forbids sharing login credentials
+# (treg never discloses the token, it injects it). Building products for your own users is the
+# ordinary Replicate use and 5.1 grants commercial rights in Output "subject to any Third Party
+# Terms" (each model's license, e.g. FLUX and Ideogram non-compete clauses, passes through to the
+# caller). A verbatim relay of the raw API to third parties on treg's account is not clearly on
+# either side of 2.7(c)(iii): treat as UNCLEAR and obtain written confirmation from Replicate before
+# platform metering goes public; BYOK rows are unaffected.
 source:
   docs: https://replicate.com/docs/topics/models/official-models
   curated: 2026-09-02

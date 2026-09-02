@@ -1,4 +1,11 @@
 provider: openrouter
+# Terms check (2026-09-02, https://openrouter.ai/terms, last updated 2026-08-31): section 7(4)
+# forbids using the Service "for purposes of reselling API access to Models or otherwise developing
+# a competing service", and 7(14) forbids selling or transferring the access granted. Serving these
+# rows on treg's own key, metered to a team's balance, is reselling API access under that wording.
+# Platform metering therefore needs a written agreement with OpenRouter before launch; without one
+# this provider must stay BYOK-only (TREG_PLATFORM_PROVIDERS without "openrouter"). Section 6.1
+# defers output ownership to each Model's own terms, which pass through to the caller unchanged.
 source:
   docs: https://openrouter.ai/docs/guides/overview/multimodal/video-generation
   curated: 2026-09-02
