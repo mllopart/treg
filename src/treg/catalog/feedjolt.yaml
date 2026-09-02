@@ -20,7 +20,7 @@ proposed_capabilities:
   product.feedback.posts.list: "List customer feedback posts"
   product.feedback.posts.get: "Get one feedback post"
   product.feedback.posts.search: "Search customer feedback posts by keyword"
-  product.feedback.roadmap.get: "Get a public product roadmap grouped by status"
+  product.feedback.roadmap.get: "Get a product roadmap grouped by status"
   product.feedback.changelog.list: "List published changelog entries"
   product.feedback.statuses.list: "List feedback statuses in a workspace"
   product.feedback.tags.list: "List tags in a feedback workspace"
@@ -339,7 +339,7 @@ endpoints:
     method: GET
     path: /workspaces/{workspace_slug}/roadmap
     name: "Get workspace roadmap"
-    summary: "Get Public Roadmap"
+    summary: "Get Workspace Roadmap"
     input:
       pathParams:
         workspace_slug: {type: string, required: true, example: "corvidly"}
@@ -364,7 +364,7 @@ endpoints:
     method: GET
     path: /workspaces/{workspace_slug}/changelog
     name: "List workspace changelog"
-    summary: "List Public Changelog"
+    summary: "List Workspace Changelog"
     input:
       pathParams:
         workspace_slug: {type: string, required: true, example: "corvidly"}
