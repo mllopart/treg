@@ -203,7 +203,7 @@ def test_call_await_writes_only_terminal_raw_body_to_stdout(monkeypatch, capsys)
     assert "async task submitted: task-7" in captured.err
     assert "resume: treg call vendor.task.status -p task_id=task-7" in captured.err
     assert "generation reservation: $0.1" in captured.err
-    assert "retrieve: treg call vendor.result -p file_id=file-7" in captured.err
+    assert "retrieve the result (file bytes, or JSON with a download URL): treg call vendor.result -p file_id=file-7" in captured.err
     assert "result lifetime: 9h" in captured.err
 
 

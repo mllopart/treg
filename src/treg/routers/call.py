@@ -261,9 +261,14 @@ async def catalog_endpoint_access(
         # costs more or less depending on how many rows the caller asks for, so it is "~".
         est = _platform_estimate_micro(cost, {})
         low = cost.get("usd_min")  # a price table: the figure depends on model/resolution/duration
-        price = (f"${low:g}-${ledger.usd(est):g} by model, resolution and duration (reserved at "
-                 f"the table row your request matches)" if isinstance(low, (int, float))
-                 and low < ledger.usd(est) else f"~${ledger.usd(est):g}/call")
+        if isinstance(low, (int, float)) and low < ledger.usd(est):
+            price = (f"${low:g}-${ledger.usd(est):g} by model, resolution and duration; the whole "
+                     f"${ledger.usd(est):g} ceiling is held until the task finishes, then you pay "
+                     f"the provider's reported cost" if cost.get("settle") == "usage" else
+                     f"${low:g}-${ledger.usd(est):g} by model, resolution and duration (reserved at "
+                     f"the table row your request matches)")
+        else:
+            price = f"~${ledger.usd(est):g}/call"
         return {
             "tier": "platform",
             "detail": (f"no key needed — uses treg's {service} key, {price} "

@@ -207,8 +207,9 @@ endpoints:
       table:
         - {when: {body.model: MiniMax-H3, body.resolution: 768P}, value: 0.08, times: body.duration}
         - {when: {body.model: MiniMax-H3, body.resolution: 2K}, value: 0.13, times: body.duration}
-        - {when: {body.model: MiniMax-H3-Max, body.resolution: 480P}, value: 0.05, times: body.duration}
-        - {when: {body.model: MiniMax-H3-Max, body.resolution: 768P}, value: 0.08, times: body.duration}
+        # H3-Max accepts 5-15 s (H3 4-15 s): `times_min` keeps the displayed floor honest ($0.25).
+        - {when: {body.model: MiniMax-H3-Max, body.resolution: 480P}, value: 0.05, times: body.duration, times_min: 5}
+        - {when: {body.model: MiniMax-H3-Max, body.resolution: 768P}, value: 0.08, times: body.duration, times_min: 5}
       fallback: {value: 1.96, note: "Fifteen seconds of 2K output at the highest documented per-second rate ($1.95), rounded up a cent to clear float comparison."}
       currency: USD
       settle: table

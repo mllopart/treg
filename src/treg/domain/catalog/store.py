@@ -259,7 +259,7 @@ def _table_floor(cost: object, input_schema: object) -> float | None:
             continue
         value = float(row["value"])
         if isinstance(row.get("times"), str):
-            low = fields.get(row["times"], {}).get("min")
+            low = row.get("times_min", fields.get(row["times"], {}).get("min"))
             value *= float(low) if isinstance(low, (int, float)) and low > 0 else 1.0
         floors.append(value)
     return min(floors) if floors else None

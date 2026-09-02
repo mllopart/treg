@@ -209,7 +209,7 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
         if not isinstance(row, dict):
             fail(errors, rwhere, "table row must be a mapping")
             continue
-        extra = set(row) - {"when", "value", "times"}
+        extra = set(row) - {"when", "value", "times", "times_min"}
         if extra:
             fail(errors, rwhere, f"unknown table row keys: {sorted(extra)}")
         when = row.get("when")
@@ -261,6 +261,18 @@ def check_cost_table(cost: dict, input_schema: object, where: str, errors: list[
                 fail(errors, rwhere, f"times field '{times}' must declare a positive input max")
                 continue
             maximum *= float(upper)
+            # `times_min`: this row's own lower bound on the `times` field, when the model it names
+            # accepts less than the field-wide minimum. Display only (the price floor); it must sit
+            # inside the field's declared range.
+            if "times_min" in row:
+                low = row.get("times_min")
+                field_min = spec.get("min")
+                if not _finite_number(low) or float(low) <= 0 \
+                        or (_finite_number(field_min) and float(low) < float(field_min)) \
+                        or float(low) > float(upper):
+                    fail(errors, rwhere, "times_min must be a number within the times field's declared range")
+        elif "times_min" in row:
+            fail(errors, rwhere, "times_min is only valid on a row with times")
         maximums.append(maximum)
 
     fallback = cost.get("fallback")

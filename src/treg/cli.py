@@ -2513,7 +2513,10 @@ def cmd_call(args, cfg) -> None:
             rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value)
             print(f"result: {rendered}", file=sys.stderr)
         if outcome.get("fetch_command"):
-            print(f"retrieve: {outcome['fetch_command']}", file=sys.stderr)
+            # What comes back is the provider's own retrieval answer: the file bytes (OpenRouter) or
+            # a JSON envelope carrying a download URL (MiniMax) — the command is the same shape.
+            print(f"retrieve the result (file bytes, or JSON with a download URL): "
+                  f"{outcome['fetch_command']}", file=sys.stderr)
         if outcome.get("ttl_note"):
             print(f"download promptly; result lifetime: {outcome['ttl_note']}", file=sys.stderr)
         if outcome.get("error"):
@@ -5027,9 +5030,14 @@ def _catalog_get(endpoint_id: str, cfg) -> None:
         _dim("  the only provider offering this capability")
 
     _print_params(e.get("input") or {})
+    _print_price_table(e.get("cost"), e.get("input") or {})
+    _print_async(e.get("async"))
 
     print(f"\n{_B}RUN IT{_R}")
-    print(f"  {body['call_template']}")
+    template = body['call_template']
+    if e.get("async") and "--await" not in template:
+        template += " --await --timeout 900"
+    print(f"  {template}")
     _dim("  the key is injected server-side — you never hold it")
     # Which credential tier would serve THIS caller (registered tool / org credential / treg's own
     # metered key / none)? Authenticated + best-effort: signed-out readers and older servers skip it.
@@ -5076,12 +5084,35 @@ def _print_params(inp: dict) -> None:
             continue
         # required first: the shortest working call is the required set, and that is what an agent
         # reads this table to assemble
-        for name, spec in sorted(params.items(), key=lambda kv: (not (kv[1] or {}).get("required")
-                                                                 if isinstance(kv[1], dict) else True, kv[0])):
-            spec = spec if isinstance(spec, dict) else {}
-            note = spec.get("note") or ""
+        # A nested object (Replicate's `input: {properties: …}`) is shown as dotted names, one row per
+        # leaf, because that is what the caller has to type.
+        flat: list[tuple[str, dict]] = []
+
+        def walk(items: dict, prefix: str) -> None:
+            for name, spec in items.items():
+                spec = spec if isinstance(spec, dict) else {}
+                props = spec.get("properties")
+                if isinstance(props, dict) and props:
+                    walk(props, f"{prefix}{name}.")
+                else:
+                    flat.append((f"{prefix}{name}", spec))
+
+        walk(params, "")
+        for name, spec in sorted(flat, key=lambda kv: (not kv[1].get("required"), kv[0])):
+            # The NOTE column is the whole contract: the prose rule, then the closed set of values,
+            # the default, the numeric range, the example. An agent choosing "the cheapest valid
+            # request" needs the enum and the bounds more than the prose.
+            parts = [spec.get("note") or ""]
+            if isinstance(spec.get("enum"), list) and spec["enum"]:
+                parts.append("one of: " + " | ".join(str(v) for v in spec["enum"]))
+            if "default" in spec:
+                parts.append(f"default {spec['default']}")
+            lo, hi = spec.get("min"), spec.get("max")
+            if lo is not None or hi is not None:
+                parts.append(f"range {lo if lo is not None else '…'}-{hi if hi is not None else '…'}")
             if spec.get("example") not in (None, ""):
-                note = f"{note} (e.g. {spec['example']})".strip()
+                parts.append(f"e.g. {spec['example']}")
+            note = " · ".join(p.rstrip(".") if i else p for i, p in enumerate(parts) if p)
             # The note is the contract ("one of domain | company", "THIS IS THE PRICE DIAL") — never
             # clipped: an agent reading this table to build a call must see the whole rule. Long
             # notes wrap under the NOTE column instead.
@@ -5095,6 +5126,68 @@ def _print_params(inp: dict) -> None:
         import textwrap
         for i, line in enumerate(textwrap.wrap(inp["note"], width=90)):
             print(f"  {_M}{'note' if i == 0 else '':<6}{_R} {line}")
+
+
+def _print_price_table(cost, inp: dict) -> None:
+    """The price rows a `cost.table` endpoint bills by — the matrix behind the "$low-$high" line.
+    Rows are the provider's own price list, first match wins; the fallback is what an unmatched
+    request reserves."""
+    if not isinstance(cost, dict) or not isinstance(cost.get("table"), list) or not cost["table"]:
+        return
+    cur = cost.get("currency") or "USD"
+    money = (lambda v: f"${v:g}") if cur == "USD" else (lambda v: f"{v:g} {cur}")
+    settle = cost.get("settle", "table")
+    print(f"\n{_B}PRICE TABLE{_R}  first matching row; unmatched requests reserve the fallback")
+    for row in cost["table"]:
+        if not isinstance(row, dict):
+            continue
+        when = " · ".join(f"{k.split('.', 1)[-1]}={v}" for k, v in (row.get("when") or {}).items())
+        price = money(float(row.get("value") or 0))
+        if row.get("times"):
+            price += f" × {str(row['times']).split('.', 1)[-1]}"
+            if row.get("times_min") is not None:
+                price += f" (from {row['times_min']})"
+        print(f"  {_clip(when, 58):<58} {price}")
+    fb = cost.get("fallback") or {}
+    if isinstance(fb, dict) and fb.get("value") is not None:
+        print(f"  {'fallback (ceiling)':<58} {money(float(fb['value']))}")
+    if settle == "usage":
+        usage = cost.get("usage") or {}
+        _dim(f"  settle: usage — the rows are the rate card; the whole fallback is reserved and the")
+        _dim(f"  provider's reported {usage.get('path', 'usage')} is what you pay (a minimum charge may apply).")
+    else:
+        _dim("  settle: table — the matched row is reserved at submission and charged when the task succeeds.")
+
+
+def _print_async(desc) -> None:
+    """How an async generation call is followed — the same descriptor `--await` executes and the
+    `X-Treg-Async` header carries, so an MCP or raw-HTTP agent can poll it by hand."""
+    if not isinstance(desc, dict) or not desc:
+        return
+    print(f"\n{_B}ASYNC TASK{_R}  the call returns at once; the result arrives later")
+    print(f"  task id      response field `{desc.get('id_from')}`")
+    poll = desc.get("poll") or {}
+    if poll.get("endpoint"):
+        param = poll.get("param") or {}
+        print(f"  poll         treg call {poll['endpoint']} -p {param.get('name')}=<task id>"
+              f"   every ~{desc.get('interval', 10)} s")
+    elif poll.get("url_from"):
+        print(f"  poll         the URL in response field `{poll['url_from']}` (hosts: "
+              f"{', '.join(poll.get('url_hosts') or [])})   every ~{desc.get('interval', 10)} s")
+    status = desc.get("status") or {}
+    print(f"  done when    `{status.get('path')}` is one of {status.get('success')}; "
+          f"failed when {status.get('failure')} (a failed task refunds the hold)")
+    result = desc.get("result") or {}
+    if result.get("path"):
+        print(f"  result       response field `{result['path']}`")
+    elif result.get("fetch"):
+        fp = result.get("fetch_param") or {}
+        print(f"  result       treg call {result['fetch']} -p {fp.get('name')}=<`{fp.get('value_from')}` "
+              f"from the finished task>")
+    if result.get("ttl_note"):
+        print(f"  lifetime     {result['ttl_note']} — download promptly; treg never stores media")
+    _dim("  `treg call … --await` does all of this and prints the final response; from a coding")
+    _dim("  agent, raise the shell tool's timeout or run it in the background (video takes 1-5 min).")
 
 
 def cmd_connections_ls(args, cfg) -> None:

@@ -236,8 +236,15 @@ Bare **`treg connections`** now lists (the subparser is `required=False` with a 
   `--query` (consumed — dropped from the relayed query via `relay(drop_params=…)`). Members restricted
   via `--tools` get no marketplace calls; a bare provider name (`call tikhub /path`) still 404s but
   points at the endpoint-id form. See [cli-audit-2026-07-28](cli-audit-2026-07-28.md) (design section).
-  `-p` is a short alias for `--query`. `--await [--timeout 900]` reads `X-Treg-Async`; without the
-  header it is a no-op. Descriptor semantics come from `treg.domain.asynctasks` (stdlib-only, see
+  `-p` is a short alias for `--query`. `catalog get` prints the whole contract an agent needs to
+  build the cheapest valid request: the PARAMS table flattens nested objects to dotted names and
+  its NOTE column carries the prose rule, the enum (`one of:`), the default, the numeric range and
+  the example; a `cost.table` endpoint gets a PRICE TABLE section (`_print_price_table`: the rows,
+  `× field (from times_min)` for linear rows, the fallback ceiling, and whether the row or the
+  provider's usage settles); an async endpoint gets an ASYNC TASK section (`_print_async`: id
+  field, poll command and interval, terminal values, result location or retrieval command,
+  lifetime) and its RUN IT template ends in `--await --timeout 900`. `--await [--timeout 900]`
+  reads `X-Treg-Async`; without the header it is a no-op. Descriptor semantics come from `treg.domain.asynctasks` (stdlib-only, see
   the import-boundaries fragment), not a CLI-side copy. With the header it prints the task id and a resumable `treg call` command to
   stderr, polls static catalog ids or allow-listed dynamic URLs through `/call/`, retries network/5xx
   failures with backoff up to five consecutive failures, and keeps waiting on unknown status values
