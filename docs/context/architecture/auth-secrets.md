@@ -7,7 +7,10 @@ sources:
   - src/treg/crypto.py
   - src/treg/oauth.py
   - src/treg/domain/connections/__init__.py
+  - src/treg/domain/connections/authorization.py
+  - src/treg/domain/connections/oauth_flow.py
   - src/treg/domain/connections/refresh.py
+  - src/treg/infra/oauth_exchange.py
   - src/treg/infra/oauth_refresh.py
   - src/treg/oauth_providers.py
   - src/treg/health.py
@@ -30,6 +33,30 @@ related:
 Tier 4 has explicit platform-key slots for MiniMax, OpenRouter and Replicate. The web and async cron
 receive them as environment secrets, and the worker constructs the same platform bindings as the call
 path. Key values are never copied into task records, logs or archive evidence.
+
+## Instagram grant methods (2026-09-01)
+
+Instagram is one provider with two explicit protocol profiles. The default `instagram-login`
+profile uses separate Instagram app credentials, comma-separated `instagram_business_*` scopes,
+`api.instagram.com` for the code exchange, and `graph.instagram.com` for calls. It exchanges the
+short token for a renewable long-lived token and stores the generic refresh protocol in the
+encrypted blob. The optional `facebook-page` profile uses the existing Meta app, Facebook Login,
+Page discovery, and a derived Page token. The grants are separate `Secret` rows. See
+[instagram-oauth](instagram-oauth.md) for the endpoint matrix and setup contract.
+
+The reusable multi-method rules live in `domain/connections/authorization.py`: capability
+ownership, legacy-method inference, method-specific profiles, endpoint-method selection, and scope
+translation. `oauth_providers.py` supplies registry data and keeps compatibility methods that
+delegate to those domain rules. The initial token exchange is an infrastructure adapter in
+`infra/oauth_exchange.py`; `oauth.py` is a compatibility facade only.
+
+`authorization_method` is stored on both `PendingOAuth` and `Secret`. Existing Instagram rows are
+backfilled as `facebook-page`. The callback performs token and required identity requests after it
+closes the database session. A required identity miss produces `setup_required` and no tool. Its
+detail comes from the selected provider profile's `identity_missing_detail`, so the shared callback
+contains no Instagram copy. Legacy grant inference also uses
+`OAuthProvider.authorization_method_name()` everywhere; shared call and reconnect code does not
+repeat provider ids.
 
 The hard part: match every credential shape a real skill uses, keep it encrypted, and keep OAuth tokens
 alive, without the proxy ever branching on shape.
@@ -75,6 +102,10 @@ provider that omits `expires_in` doesn't force a refresh on every call), coerces
 and raises a clear error when a 200 body carries no `access_token`; `_expires_at` treats a naive ISO
 `expiry` as UTC.
 
+Resource discovery and resource selection also call this same `ensure_fresh` implementation before
+they close their read session and start provider I/O. They do not implement their own lock, exchange,
+or conditional write path.
+
 `refresh()` posts the credential's recorded `client_id_param` dialect (TikTok reads `client_key`, not
 `client_id`), snapshotted onto the blob at mint time so a refresh months later still speaks the dialect
 the grant was minted with. The same snapshotting covers `token_endpoint_auth_method`: X and Pinterest
@@ -115,7 +146,26 @@ has already cleared it. treg's own client id/secret load from `Settings` (named 
 The Meta pair carries three tiers — read / post / **manage** (comments + DMs on Instagram; engagement,
 visitor content, metadata/webhooks, Messenger, Page video, leads_retrieval + its required
 pages_manage_ads rider, and catalog_management on Facebook Pages) — sized for the 2026-08 App Review
-bundle; `default_capability` is the broadest tier by design, so a plain Connect asks for manage.
+bundle; Instagram manage includes both `instagram_manage_messages` and its Page-side
+`pages_messaging` rider. `default_capability` is the broadest tier by design, so a plain Connect asks
+for manage.
+Meta initially returns a long-lived **user** token, but Instagram Graph operations—especially the
+Messaging API—must act through the Facebook Page linked to the selected professional account. The
+Instagram provider therefore declares a resource-token lookup. On account selection,
+`select_connection_resource()` privately resolves the linked Page token, stores it as
+`page_access_token` inside the same encrypted OAuth blob (retaining `access_token` for discovery),
+and the provisioned tool's generic OAuth binding injects that derived field. Provider metadata maps
+the linked Page id into the encrypted `page_id` context field and declares a generic resource-setup
+request. For Instagram, that request subscribes the Page to the app's
+`messages,messaging_postbacks` fields. The setup is scope-gated, so read/post-only connections do
+not attempt it. Provider discovery and setup HTTP calls run after the read database session closes;
+the result is written in a new short transaction. Resource listings and
+connection views never include the Page token; existing Instagram connections must reconnect or
+reselect their account once to populate it. The token and object id are separate concerns: Instagram
+profile/media operations still target the Instagram account id, while Facebook-login inbox sync is
+the Page messaging surface—`/{page_id}/conversations?platform=instagram` for listing and
+`/{page_id}/messages` for replies. Calling the conversations edge with the Instagram account id
+produces Meta error `(#3)` despite a valid Page token.
 Google Search Console's hand-written tool example calls out its distinct direct-tool convention:
 substitute `{site_url}` with a value encoded exactly once (`sc-domain%3Aexample.com`), and never encode
 again a property identifier returned by the sites list.
@@ -134,10 +184,13 @@ module symbols:
 - `get(service)` — look up one provider. `credentials(provider)` — treg's own id/secret (raises if this
   deployment hasn't set them). `is_configured(provider)` — whether this deployment can offer it (a
   `token`-kind provider needs nothing from treg, so always offerable).
-- `listing()` — the marketplace payload (`GET /oauth/providers`): every provider, grouped by
+- `listing()` — the catalog payload (`GET /oauth/providers`): every provider, grouped by
   `CATEGORY_ORDER`, each flagged `configured`, with per-capability scopes already in plain English via
   `scope_label()`/`SCOPE_LABELS` (a lookup keyed by the raw scope string;
-  `test_every_requested_scope_has_a_plain_english_label` guards it).
+  `test_every_requested_scope_has_a_plain_english_label` guards it). Authorization methods include
+  their display label, connect description, and their own configured state. The dashboard and CLI
+  consume this metadata instead of mapping provider or method ids themselves. A multi-method
+  provider's top-level `configured` value is true when any declared method is configured.
 - `consent_notice` — one line the dashboard shows **before** the consent popup opens, for a provider
   whose consent screen names something the user has not seen on treg. Only the Meta family carries one:
   the shared Meta app is registered as **Crewlet**, a sibling product of the same company (Superdesign

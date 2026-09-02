@@ -43,6 +43,7 @@ for _k in (
     "X_CLIENT_ID", "X_CLIENT_SECRET", "SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET",
     "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET",
     "META_CLIENT_ID", "META_CLIENT_SECRET",
+    "INSTAGRAM_CLIENT_ID", "INSTAGRAM_CLIENT_SECRET",
     # …and the tier-4 platform keys + their allow-list. A developer's .env carries real, FUNDED keys:
     # without this a suite run on their laptop could resolve tier 4 and spend actual money on the
     # in-process upstream's echo. Tests that exercise tier 4 set both halves via monkeypatch.
@@ -93,19 +94,36 @@ def make_upstream(hook_hits: list | None = None) -> FastAPI:
         # graph.facebook.com path must exist for a registry-mode Meta connect to complete.
         return {"access_token": "META-TOKEN", "token_type": "bearer", "expires_in": 5183944}
 
+    @up.post("/oauth/access_token")
+    async def instagram_short_token() -> dict:
+        return {"access_token": "IG-SHORT-TOKEN", "user_id": 17841400000000000}
+
+    @up.get("/access_token")
+    async def instagram_long_token() -> dict:
+        return {"access_token": "IG-LONG-TOKEN", "token_type": "bearer", "expires_in": 5184000}
+
+    @up.get("/v25.0/me")
+    async def instagram_identity(request: Request):
+        if request.headers.get("authorization") != "Bearer IG-LONG-TOKEN":
+            return JSONResponse({"error": {"message": "invalid token"}}, status_code=401)
+        return {"user_id": "17841400000000000", "username": "direct_ig"}
+
     @up.get("/me/accounts")
-    async def meta_pages() -> dict:
+    @up.get("/v25.0/me/accounts")
+    async def meta_pages(request: Request) -> dict:
         # Meta's primary Page listing: what the user manages through a PERSONAL Page role. One row
         # carries both the facebook shape (id/name) and the instagram shape (nested professional
         # account), so both Meta providers can discover against the same stand-in.
-        return {
-            "data": [
-                {"id": "PAGE-DIRECT", "name": "Directly Managed Page",
-                 "instagram_business_account": {"id": "IG-DIRECT", "username": "direct_ig"}},
-            ]
+        page = {
+            "id": "PAGE-DIRECT", "name": "Directly Managed Page",
+            "instagram_business_account": {"id": "IG-DIRECT", "username": "direct_ig"},
         }
+        if "access_token" in request.query_params.get("fields", ""):
+            page["access_token"] = "PAGE-TOKEN-DIRECT"
+        return {"data": [page]}
 
     @up.get("/me/businesses")
+    @up.get("/v25.0/me/businesses")
     async def meta_businesses(request: Request):
         # Meta's Business walk (needs business_management): each business row nests owned_pages /
         # client_pages whose entries are shaped like /me/accounts rows. PAGE-DIRECT reappears here
@@ -116,19 +134,70 @@ def make_upstream(hook_hits: list | None = None) -> FastAPI:
         if "noscope" in request.headers.get("authorization", ""):
             return JSONResponse(
                 {"error": {"message": "(#100) Missing Permission", "code": 100}}, status_code=400)
+        direct = {
+            "id": "PAGE-DIRECT", "name": "Directly Managed Page",
+            "instagram_business_account": {"id": "IG-DIRECT", "username": "direct_ig"},
+        }
+        client = {
+            "id": "PAGE-CLIENT", "name": "Agency Client Page",
+            "instagram_business_account": {"id": "IG-CLIENT", "username": "client_ig"},
+        }
+        if "access_token" in request.query_params.get("fields", ""):
+            direct["access_token"] = "PAGE-TOKEN-DIRECT"
+            client["access_token"] = "PAGE-TOKEN-CLIENT"
         return {
             "data": [
                 {"id": "BIZ-1", "owned_pages": {"data": [
-                    {"id": "PAGE-DIRECT", "name": "Directly Managed Page",
-                     "instagram_business_account": {"id": "IG-DIRECT", "username": "direct_ig"}},
+                    direct,
                     {"id": "PAGE-NO-IG", "name": "Business Page Without Instagram"},
                 ]}},
                 {"id": "BIZ-2", "client_pages": {"data": [
-                    {"id": "PAGE-CLIENT", "name": "Agency Client Page",
-                     "instagram_business_account": {"id": "IG-CLIENT", "username": "client_ig"}},
+                    client,
                 ]}},
             ]
         }
+
+    @up.get("/v25.0/{page_id}/conversations")
+    async def instagram_conversations(page_id: str, request: Request):
+        if request.headers.get("authorization") == "Bearer IG-LONG-TOKEN":
+            return {
+                "auth": request.headers["authorization"],
+                "raw_path": request.scope.get("raw_path", b"").decode(),
+                "data": [{"id": "IG-DIRECT-CONVERSATION-1", "ig_user_id": page_id}],
+            }
+        # Messaging is the regression this Meta token split fixes: the user token is valid OAuth,
+        # but this edge accepts only the token of the Page linked to the selected Instagram account.
+        if request.headers.get("authorization") != "Bearer PAGE-TOKEN-DIRECT":
+            return JSONResponse(
+                {"error": {"message": "must be called with a Page access token", "code": 190}},
+                status_code=403,
+            )
+        if request.query_params.get("platform") != "instagram":
+            return {"data": []}
+        return {"data": [{"id": "IG-CONVERSATION-1", "page_id": page_id}]}
+
+    @up.post("/v25.0/{page_id}/subscribed_apps")
+    async def instagram_subscribe(page_id: str, request: Request):
+        expected_token = {
+            "PAGE-DIRECT": "PAGE-TOKEN-DIRECT",
+            "PAGE-CLIENT": "PAGE-TOKEN-CLIENT",
+        }.get(page_id)
+        if request.headers.get("authorization") != f"Bearer {expected_token}":
+            return JSONResponse(
+                {"error": {"message": "must be called with a Page access token", "code": 190}},
+                status_code=403,
+            )
+        subscribed_fields = request.query_params.get("subscribed_fields", "")
+        if subscribed_fields != "messages,messaging_postbacks":
+            return JSONResponse(
+                {"error": {"message": "invalid subscribed_fields", "code": 100}}, status_code=400,
+            )
+        if hook_hits is not None:
+            hook_hits.append({
+                "meta_page_subscription": page_id,
+                "subscribed_fields": subscribed_fields,
+            })
+        return {"success": True}
 
     @up.get("/auth.test")
     async def slack_auth_test(request: Request):
@@ -263,6 +332,31 @@ def _reset_call_path_caches():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture
+def posthog_events(monkeypatch):
+    """The PostHog mirror, switched on for one test with its POST stubbed. `await posthog_events()`
+    drains the queue and returns every `tool_called` event the server would have batched out, so a
+    test can assert on the product-analytics shape of a call without the two-second flush timer."""
+    from treg import analytics
+    from treg.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "posthog_key", "phc_test_suite", raising=False)
+    sent: list[dict] = []
+
+    async def _keep(batch):
+        sent.extend(batch)
+
+    monkeypatch.setattr(analytics, "_post", _keep)
+    analytics._queue.clear()
+
+    async def collect(event: str = "tool_called") -> list[dict]:
+        await analytics.drain()
+        return [e for e in sent if e["event"] == event]
+
+    yield collect
+    analytics._queue.clear()
 
 
 @pytest.fixture(autouse=True)

@@ -13,7 +13,7 @@ sources:
   - src/treg/alembic/versions/0007_overflow_spend.py
   - src/treg/alembic/versions/0008_org_platform_overflow_disabled.py
   - src/treg/alembic/versions/0009_callrecord_hit.py
-  - src/treg/alembic/versions/0010_async_task_record.py
+  - src/treg/alembic/versions/0011_async_task_record.py
   - src/treg/maintenance.py
   - src/treg/web/sitetrack.js
   - src/treg/models.py
@@ -38,8 +38,15 @@ related:
 `AsyncTaskRecord` is one deferred metered submission keyed by the original `call_id`: org,
 provider, endpoint, extracted task id, optional validated dynamic poll URL, reserved micro-USD,
 frozen descriptor/basis/request evidence, scheduling attempts, status and completion/error fields.
-Migration `0010` is expand-only. It ships with the behavior because old code ignores the new table
+Migration `0011` is expand-only. It ships with the behavior because old code ignores the new table
 while new code cannot safely retain an asynchronous hold without it.
+
+## OAuth authorization method identity
+
+Revision `0010` adds `authorization_method` to `PendingOAuth` and `Secret`, plus the pending
+long-lived exchange style. It backfills existing Instagram secrets as `facebook-page`. New direct
+Instagram grants use `instagram-login`. This lets one provider keep two separate grants without
+inferring their token type from encrypted data.
 
 SQLModel tables in `src/treg/models.py`. Kept minimal on purpose. Org multi-tenancy adds `Org`,
 `Membership`, `Invite` and an `org_id` on the resource nouns — the tenancy mechanics live in
@@ -301,11 +308,26 @@ client — no semaphore, because HTTP to PostHog never touches the DB pool. **Em
 module is off** (self-hosters and the test suite send nothing). `$groups: {team: org_slug}` mirrors the
 browser's `posthog.group('team', slug)` and `distinct_id` is the user email, so server events join the
 same PostHog person/group the SPA identifies. Emitters: `call_tool`'s `_audit` funnel (`tool_called`,
-with the catalog `provider` as vendor or the upstream host for own tools), `billing_topup`
+with the catalog `provider` as vendor or the upstream host for own tools; the field list is in
+[proxy-model](proxy-model.md)), `billing_topup`
 (`topup_started`), and `billing._credit` (`topup_completed`, gated on `fresh`). Drained in the lifespan
 `finally` after `audit.drain()`. The engine adds Postgres pool
 hygiene (`pool_pre_ping`/`pool_recycle`/sizing) for non-SQLite URLs, and `verify_db` refuses to start with
 no `TREG_SECRET_KEY` on a real DB (an ephemeral key would lose every stored secret on restart).
+
+Infrastructure faults use the same DB-independent queue through `capture_fault`: PostHog `$exception`
+events have the fixed `treg-server` identity and carry only the exception class, at most 500 characters
+of its string, an unhandled mechanism, and component/logger labels. URL query strings in the exception
+value are replaced with `?[redacted]` **before truncation**, so query-injected credentials cannot leak;
+frames, locals, request bodies, and user identity are never included. `FaultCaptureHandler` mirrors ERROR+
+records while analytics is enabled; it ignores the
+`treg.analytics` logger tree, marks records to prevent duplicate root/Uvicorn delivery, and uses a
+thread-local re-entry guard plus a never-raise `emit`. `_allow_fault` applies token buckets of 10/minute
+per `(fault type, logger/site)` and 60/minute process-wide; throttled events are dropped before the shared
+queue and the next allowed event for that key carries `throttled_dropped`. The lifespan installs the
+handler on root and directly on `uvicorn.error` (Uvicorn's default parent does not propagate to root),
+then removes it after shutdown drain. `bootstrap_handlers._pool_saturated` calls `capture_fault` directly
+because its typed 503 is handled before Uvicorn would log it.
 
 > **Tenancy:** every resource noun carries `org_id`; access is scoped to the caller's org. Details:
 > [multi-tenancy](multi-tenancy.md).

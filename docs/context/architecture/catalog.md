@@ -53,6 +53,8 @@ sources:
   - src/treg/catalog/google-search-console.extended.yaml
   - src/treg/catalog/google-tag-manager.yaml
   - src/treg/catalog/google-tag-manager.extended.yaml
+  - src/treg/catalog/instagram.yaml
+  - src/treg/catalog/instagram.extended.yaml
   - src/treg/catalog/justoneapi.extended.yaml
   - src/treg/catalog/minimax.yaml
   - src/treg/catalog/examples/minimax.video-gen.result.retrieve.json
@@ -86,6 +88,20 @@ The computed cost view uses a `cost.table` fallback as its scalar validated uppe
 eligibility and compact displays. Runtime charging evaluates the first matching row against request
 values plus catalog defaults and freezes that settlement basis. Terminal usage or the recorded table
 evidence feeds the shared money settlement function; provider variation stays declarative in YAML.
+
+## Authorization metadata
+
+An endpoint can declare `authorization_method`, ordered `authorization_methods`, method-specific
+`authorization_paths`, `required_scopes`, `required_resource`, and `token_type`. `_normalize`
+keeps these fields on the internal row and exposes them on endpoint detail only when present.
+Marketplace resolution uses them for preflight and grant selection. Instagram is the first user;
+its 32-row audit is in [instagram-oauth](instagram-oauth.md).
+
+Meta's published reference is not available as a machine-readable OpenAPI document. Reviewed
+Instagram `input` and authorization contracts are therefore curated catalog data, and ingestion
+carries them forward instead of erasing them on a later scrape.
+Instagram is also parameter-multiplexed: profile lookup and business discovery intentionally share
+`GET /{ig_user_id}`; the required `fields=business_discovery...` value selects the latter operation.
 
 ## Why
 
@@ -904,7 +920,7 @@ actually do?* — and their sources differ per provider:
 | youtube | youtube v3 discovery + the published quota-cost table | 76 | 2 |
 | google-ads | the GAQL resource reference — one entry per queryable resource | 42 | 0 |
 | x | X's own v2 OpenAPI | 168 | 91 |
-| facebook / instagram / meta-ads | hand-curated from the Graph HTML reference | 26 / 23 / 34 | 6 / 7 / 8 |
+| facebook / instagram / meta-ads | hand-curated from the Graph HTML reference | 26 / 22 / 34 | 6 / 2 / 8 |
 
 Three things generalise from it:
 
@@ -925,6 +941,14 @@ Three things generalise from it:
 - **No test_request anywhere in this wave.** Every route needs a property id, a customer id or a
   Page id that belongs to the connected business and that no spec can supply. They are verified by
   replay against a live connection (`--via-treg`), not by a generated blind call.
+- **Instagram Messaging is deliberately core-curated.** Conversation listing and message sending
+  carry the Page-token/IGSID/window constraints and complete Try-form inputs in `instagram.yaml`;
+  conversation listing targets the linked Facebook Page id (`/{page_id}/conversations` with
+  `platform=instagram`), and replies use that Page's `/{page_id}/messages` edge—not the Instagram
+  account id used by profile/media routes. The send route remains explicitly unverified so no
+  catalog sweep can deliver a real DM. The Instagram generator omits these two messaging routes;
+  they exist only in core. Meta's exact `(method, path)` core-wins dedup still protects all other
+  generated routes whose placeholder names carry different Graph object semantics.
 
 ## Process — bulk-verifying the extended tier
 

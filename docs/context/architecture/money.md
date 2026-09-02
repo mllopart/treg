@@ -13,7 +13,7 @@ sources:
   - src/treg/application/call/reserve.py
   - src/treg/application/call/settle.py
   - src/treg/application/asynctasks.py
-  - src/treg/alembic/versions/0010_async_task_record.py
+  - src/treg/alembic/versions/0011_async_task_record.py
   - src/treg/application/referrals.py
   - src/treg/domain/governance/budgets.py
   - src/treg/infra/__init__.py

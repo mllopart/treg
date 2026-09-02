@@ -184,6 +184,19 @@ def test_call_runtime_import_edges_point_inward() -> None:
     assert _package_forbidden_imports(_SRC / "domain" / "asynctasks", async_forbidden) == set()
 
 
+def test_catalog_access_router_only_translates_the_application_result() -> None:
+    tree = ast.parse((_SRC / "routers" / "call.py").read_text())
+    owner = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "catalog_endpoint_access"
+    )
+    body = "\n".join(ast.unparse(statement) for statement in owner.body)
+    assert _call_names(body) == {
+        "get_catalog_endpoint_access",
+        "_translate_call_failure",
+    }
+
+
 @pytest.mark.parametrize(
     ("package", "forbidden", "mutation"),
     [
