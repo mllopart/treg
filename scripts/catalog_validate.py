@@ -350,6 +350,9 @@ def check_async_descriptor(descriptor: object, where: str, provider: str,
             return None
         if target.get("kind") != "utility":
             fail(errors, where, f"{label} '{endpoint_id}' must have kind utility")
+        if str(target.get("status") or "").strip():
+            fail(errors, where, f"{label} '{endpoint_id}' is marked {target['status']!r}; a descriptor "
+                                "cannot depend on a retired or broken row")
         if target.get("method") != "GET":
             fail(errors, where, f"{label} '{endpoint_id}' must use GET")
         return target

@@ -412,3 +412,14 @@ def test_usage_settlement_requires_an_async_descriptor_and_finite_interval():
     errors = []
     validator.check_async_descriptor(descriptor, "x", "demo", {}, {"type": "per_success"}, errors)
     assert any("finite" in e for e in errors)
+
+
+def test_async_descriptor_rejects_a_retired_or_broken_poll_target():
+    errors: list[str] = []
+    index = {"demo.video-gen.status": {
+        "provider": "demo", "kind": "utility", "method": "GET", "path": "/tasks/{task_id}",
+        "status": "retired",
+        "input": {"pathParams": {"task_id": {"type": "string", "required": True}}}}}
+    validator.check_async_descriptor(_valid_async(), "demo.yaml:submit", "demo", index,
+                                     {"type": "per_success"}, errors)
+    assert any("marked 'retired'" in e for e in errors)

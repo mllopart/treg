@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import timedelta
 
@@ -513,3 +514,101 @@ async def test_idempotent_replay_of_an_async_submission_keeps_the_descriptor(
     again = await clients.post(f"/call/{EP}", json=body, headers={"Idempotency-Key": "gen-1"})
     assert again.status_code == 201 and again.headers.get("X-Treg-Idempotent-Replay") == "true"
     assert again.headers.get("x-treg-async") == first.headers.get("x-treg-async")
+
+
+async def test_two_workers_racing_the_same_row_move_money_exactly_once(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    """A second instance re-claims a row whose lease lapsed while the first poll is in flight
+    (Render cron overlap). Both reach _finish; the row lock and the once-only hold claim leave one
+    settle entry and one terminal state. Meaningful on Postgres (FOR UPDATE SKIP LOCKED)."""
+    call_id = await _due_submission(clients, monkeypatch, {"status": "succeeded", "output": ["u"]})
+    first_polling = asyncio.Event()
+    release_first = asyncio.Event()
+    polls = 0
+
+    async def slow_poll(row, client):
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            async with session_maker() as db:  # the lease lapses while this poll is in flight
+                live = await db.get(AsyncTaskRecord, row.call_id)
+                live.next_check_at = utcnow_naive() - timedelta(seconds=1)
+                await db.commit()
+            first_polling.set()
+            await release_first.wait()
+        return 200, json.dumps({"status": "succeeded", "output": ["u"]}).encode()
+
+    monkeypatch.setattr(task_app, "_poll", slow_poll)
+    first = asyncio.create_task(task_app.settle_due())
+    await asyncio.wait_for(first_polling.wait(), 10)
+    second = await task_app.settle_due()          # re-claims the lapsed lease and settles
+    release_first.set()
+    first_result = await first
+    assert second.claimed == 1 and first_result.claimed == 1
+    async with session_maker() as db:
+        row = await db.get(AsyncTaskRecord, call_id)
+        settles = (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == call_id, LedgerEntry.kind == "settle"))).scalars().all()
+        hold = await db.get(Hold, call_id)
+    assert row.status == "settled" and row.settled_micro == 3000
+    assert len(settles) == 1 and settles[0].amount_micro == -3000 and hold is None
+
+
+async def test_cancellation_at_the_pending_row_commit_boundary_leaves_a_coherent_outcome(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    """The request is cancelled the instant the pending row commits: the request path releases the
+    hold it still owns, and the worker must then record the row as released, not settle it at zero."""
+    real_defer = task_app.defer_submission
+
+    async def defer_then_cancel(mk, body, org_id):
+        await real_defer(mk, body, org_id)
+        mk.call_id = mk.call_id or None
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(task_app, "defer_submission", defer_then_cancel)
+    # The request path re-raises CancelledError after compensating; the ASGI client surfaces it.
+    with pytest.raises(BaseException):
+        await _submit(clients, monkeypatch, {
+            "id": "prediction-cancel", "urls": {"get": "https://api.replicate.com/v1/predictions/c"}})
+    async with session_maker() as db:
+        row = (await db.execute(select(AsyncTaskRecord).where(
+            AsyncTaskRecord.task_id == "prediction-cancel"))).scalar_one()
+        hold = await db.get(Hold, row.call_id)
+        kinds = sorted(e.kind for e in (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == row.call_id))).scalars().all())
+        row.next_check_at = utcnow_naive() - timedelta(seconds=1)
+        await db.commit()
+        call_id = row.call_id
+    assert row.status == "pending"
+    if hold is None:  # compensation released the hold while the row was already durable
+        assert kinds == ["release", "reserve"]
+
+        async def fake_poll(row, client):
+            return 200, json.dumps({"status": "succeeded", "output": ["u"]}).encode()
+
+        monkeypatch.setattr(task_app, "_poll", fake_poll)
+        await task_app.settle_due()
+        async with session_maker() as db:
+            row = await db.get(AsyncTaskRecord, call_id)
+            kinds = sorted(e.kind for e in (await db.execute(select(LedgerEntry).where(
+                LedgerEntry.call_id == call_id))).scalars().all())
+        assert row.status == "released" and row.settled_micro == 0
+        assert kinds == ["release", "reserve"], "no settle may follow a released hold"
+    else:  # the hold survived with its row: the worker owns it from here, nothing was double-moved
+        assert kinds == ["reserve"]
+
+
+async def test_another_org_cannot_read_a_task_by_its_call_ref(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "succeeded", "output": ["u"]})
+    assert (await task_app.settle_due()).settled == 1
+    assert call_id in await task_app.views_for(1, [call_id])
+    assert await task_app.views_for(2, [call_id]) == {}
+    other = await clients.post("/users", json={"email": "someone-else@example.com"})
+    assert other.status_code == 200
+    stranger = {"X-Treg-Token": other.json()["token"]}
+    assert (await clients.get(f"/calls/{call_id}", headers=stranger)).status_code == 404
+    assert call_id not in {r.get("call_ref") for r in (await clients.get("/calls", headers=stranger)).json()}

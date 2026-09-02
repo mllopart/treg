@@ -201,6 +201,16 @@ async def _finish(call_id: str, outcome: str, document: object | None, now) -> s
         row = await db.get(AsyncTaskRecord, call_id, with_for_update=True)
         if row is None or row.status != asynctasks.PENDING:
             return "noop"
+        if outcome in ("success", "failure", "timed_out") and await db.get(Hold, call_id) is None:
+            # The request path already closed this hold (cancelled at the commit boundary, or
+            # reaped): there is no money left to move, and a row "settled" at zero would lie.
+            row.status = asynctasks.RELEASED
+            row.settled_micro = 0
+            row.error = "hold was already closed before the terminal state"
+            row.completed_at = now
+            await db.commit()
+            log.warning("async task %s reached %s but its hold was already closed", call_id, outcome)
+            return row.status
         if outcome == "success":
             evidence = {"terminal": document}
             raw = settlement.settle(row.settlement_basis, evidence)
