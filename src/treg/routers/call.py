@@ -29,6 +29,7 @@ from ..application.call.intake import (
 from ..application.call.types import CallerSnapshot, CallFailure, CallInput, UpstreamResponse
 from ..caller_metadata import _client_of
 from ..config import get_settings
+from ..domain.catalog import store as catalog_store
 from ..domain.governance import access as access_policy
 from ..domain.governance import publicdemo as publicdemo_policy
 from ..domain.identity.access import Caller, require_member
