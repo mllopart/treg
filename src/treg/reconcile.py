@@ -54,11 +54,12 @@ def window_start(days: int) -> datetime:
 
 
 async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
-    """Pending age, fallback reviews, and per-provider terminal settlement outcomes."""
+    """Pending age, absorbed timeouts (holds released after 24h, the platform ate any upstream
+    charge — each one is a review item), and per-provider terminal settlement outcomes."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rows = (await db.execute(select(AsyncTaskRecord))).scalars().all()
     ages = {"under_5m": 0, "5m_to_1h": 0, "1h_to_6h": 0, "6h_to_24h": 0, "over_24h": 0}
-    fallback = []
+    absorbed = []
     providers: dict[str, dict] = {}
     for row in rows:
         if row.status == "pending":
@@ -68,7 +69,7 @@ async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
                       "over_24h")
             ages[bucket] += 1
         if row.status == "timed_out" and row.completed_at and row.completed_at >= since:
-            fallback.append({
+            absorbed.append({
                 "call_id": row.call_id, "org_id": row.org_id, "provider": row.provider,
                 "endpoint_id": row.endpoint_id, "reserved_micro": row.reserved_micro,
                 "settled_micro": row.settled_micro, "completed_at": row.completed_at.isoformat(),
@@ -88,9 +89,9 @@ async def async_task_settlement(db: AsyncSession, since: datetime) -> dict:
                        "success_rate": round(item["successes"] / total, 4) if total else None,
                        "settled_usd": usd(item["settled_micro"])})
     output.sort(key=lambda item: item["provider"])
-    fallback.sort(key=lambda item: item["completed_at"], reverse=True)
+    absorbed.sort(key=lambda item: item["completed_at"], reverse=True)
     return {"pending": sum(ages.values()), "pending_age": ages,
-            "fallback_settlements": fallback, "providers": output}
+            "absorbed_timeouts": absorbed, "providers": output}
 
 
 async def price_drift(

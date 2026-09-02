@@ -71,13 +71,14 @@ def classify_terminal(descriptor: dict, response: object) -> str:
 def artifact(descriptor: dict, terminal: object) -> dict:
     """What a successful terminal response lets the caller retrieve, read per the descriptor.
 
-    Mirrors the CLI's `--await` reading of the same descriptor. `result.path` mode yields the raw
-    value plus the first URL-shaped string in it; `result.fetch` mode yields the retrieval command,
-    because the artifact lives behind one more call and treg never downloads media. `ttl_note` is
-    passed through so every display can say how long the address stays valid.
+    `result.path` mode yields the raw value plus the first URL-shaped string in it; `result.fetch`
+    mode yields the retrieval target as `{endpoint, name, value}` (the artifact lives behind one
+    more call and treg never downloads media) for the caller to format. `ttl_note` passes through
+    so every display can say how long the address stays valid. Shared by the CLI awaiter, the
+    settlement worker's views and the dashboard — one reading of the descriptor, not three.
     """
     rule = (descriptor or {}).get("result") or {}
-    view: dict = {"result": None, "result_url": None, "fetch_command": None,
+    view: dict = {"result": None, "result_url": None, "fetch": None,
                   "ttl_note": str(rule["ttl_note"]) if rule.get("ttl_note") else None}
     if rule.get("path"):
         value = json_path(terminal, str(rule["path"]))
@@ -90,8 +91,8 @@ def artifact(descriptor: dict, terminal: object) -> dict:
     fetch_rule = rule.get("fetch_param") or {}
     value = json_path(terminal, str(fetch_rule.get("value_from") or ""))
     if rule.get("fetch") and fetch_rule.get("name") and value not in (None, ""):
-        view["fetch_command"] = (
-            f"treg call {rule['fetch']} -p {fetch_rule['name']}={value}")
+        view["fetch"] = {"endpoint": str(rule["fetch"]), "name": str(fetch_rule["name"]),
+                         "value": str(value)}
     return view
 
 

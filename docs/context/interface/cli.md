@@ -237,7 +237,8 @@ Bare **`treg connections`** now lists (the subparser is `required=False` with a 
   via `--tools` get no marketplace calls; a bare provider name (`call tikhub /path`) still 404s but
   points at the endpoint-id form. See [cli-audit-2026-07-28](cli-audit-2026-07-28.md) (design section).
   `-p` is a short alias for `--query`. `--await [--timeout 900]` reads `X-Treg-Async`; without the
-  header it is a no-op. With the header it prints the task id and a resumable `treg call` command to
+  header it is a no-op. Descriptor semantics come from `treg.domain.asynctasks` (stdlib-only, see
+  the import-boundaries fragment), not a CLI-side copy. With the header it prints the task id and a resumable `treg call` command to
   stderr, polls static catalog ids or allow-listed dynamic URLs through `/call/`, retries network/5xx
   failures with backoff up to five consecutive failures, and keeps waiting on unknown status values
   after one warning. Stdout contains only the terminal polling response bytes. Exit codes are 0 for

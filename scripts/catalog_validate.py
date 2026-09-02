@@ -55,7 +55,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from treg.domain.catalog.store import COST_SOURCES as _SOURCES  # noqa: E402
 from treg.domain.catalog.store import COST_UNITS as _UNITS  # noqa: E402
 from treg.domain.catalog.store import CONFIDENCES as _CONFIDENCES  # noqa: E402
-from treg.domain.catalog.store import merge_async_descriptor  # noqa: E402
+from treg.domain.catalog.store import effective_async_descriptor  # noqa: E402
 
 SCOPES = {"any_account", "own_account"}
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
@@ -80,7 +80,9 @@ ENDPOINT_STATUSES = {"retired", "broken"}
 QUERY_ARRAY_ENCODINGS = {"json", "comma", "repeated"}
 ASYNC_PARAM_LOCATIONS = {"pathParams", "queryParams"}
 JSON_PATH = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+)(?:\.(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+))*")
-USAGE_UNITS = {"usd", "token"}
+# Only the unit real traffic has settled (OpenRouter's `usage.cost` in dollars). A token unit
+# returns with the first metered token-priced listing, together with its fx rule and a live test.
+USAGE_UNITS = {"usd"}
 # the section heading an endpoint files under on its platform page — one lowercase word
 DOMAIN = re.compile(r"[a-z][a-z0-9_]*")
 HOST = re.compile(
@@ -744,7 +746,7 @@ def main(argv: list[str]) -> int:
                     fail(errors, where, f"cost.type missing or not one of {sorted(COST_TYPES)}")
                 else:
                     check_cost(cost, where, errors, warnings, inp)
-            effective_async = merge_async_descriptor(data.get("async"), ep.get("async"))
+            effective_async = effective_async_descriptor(data.get("async"), ep.get("async"))
             if effective_async is not None:
                 check_async_descriptor(effective_async, where, str(service), endpoint_index,
                                        cost, errors)

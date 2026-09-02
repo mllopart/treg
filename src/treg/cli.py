@@ -2253,16 +2253,13 @@ def cmd_tool_update(args, cfg) -> None:
 
 
 # ---- call + audit -------------------------------------------------------------------------
-def _json_path(document, path: str):
-    value = document
-    for part in str(path).split("."):
-        if isinstance(value, dict):
-            value = value.get(part)
-        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-            value = value[int(part)]
-        else:
-            return None
-    return value
+# The descriptor semantics (dotted paths, terminal classification, artifact extraction) are the
+# server's own `treg.domain.asynctasks`, a stdlib-only leaf — one implementation, pinned light by
+# `test_import_lightness` and an import-linter contract, so the CLI and the settlement worker can
+# never disagree about what "done" means.
+from .domain.asynctasks import artifact as _async_artifact  # noqa: E402
+from .domain.asynctasks import classify_terminal as _classify_terminal  # noqa: E402
+from .domain.asynctasks import json_path as _json_path  # noqa: E402
 
 
 def _async_param(rule: dict) -> tuple[str, str]:
@@ -2346,28 +2343,27 @@ def await_async_task(descriptor: dict, submission: httpx.Response, call_fn, cloc
             return {"code": 3, "task_id": str(task_id), "recovery": recovery,
                     "error": "a polling response was not JSON"}
         status = str(_json_path(terminal, descriptor["status"]["path"]))
-        if status in {str(v) for v in descriptor["status"]["success"]}:
+        outcome = _classify_terminal(descriptor, terminal)
+        if outcome == "success":
             result = {"code": 0, "task_id": str(task_id), "recovery": recovery,
                       "response": response, "status": status}
-            result_rule = descriptor["result"]
-            if result_rule.get("path"):
-                result["result"] = _json_path(terminal, result_rule["path"])
+            found = _async_artifact(descriptor, terminal)
+            if descriptor["result"].get("path"):
+                result["result"] = found["result"]
+            elif found["fetch"] is None:
+                value_from = descriptor["result"]["fetch_param"]["value_from"]
+                return {"code": 1, "task_id": str(task_id), "recovery": recovery,
+                        "response": response, "status": status,
+                        "error": f"the terminal response has no {value_from!r} for result retrieval"}
             else:
-                _, fetch_name = _async_param(result_rule["fetch_param"])
-                value_from = result_rule["fetch_param"]["value_from"]
-                fetch_value = _json_path(terminal, value_from)
-                if fetch_value in (None, ""):
-                    return {"code": 1, "task_id": str(task_id), "recovery": recovery,
-                            "response": response, "status": status,
-                            "error": f"the terminal response has no {value_from!r} for result retrieval"}
+                fetch = found["fetch"]
                 result["fetch_command"] = (
-                    f"treg call {result_rule['fetch']} -p "
-                    f"{shlex.quote(fetch_name + '=' + str(fetch_value))}"
-                )
-            if result_rule.get("ttl_note"):
-                result["ttl_note"] = str(result_rule["ttl_note"])
+                    f"treg call {fetch['endpoint']} -p "
+                    f"{shlex.quote(fetch['name'] + '=' + fetch['value'])}")
+            if found["ttl_note"]:
+                result["ttl_note"] = found["ttl_note"]
             return result
-        if status in {str(v) for v in descriptor["status"]["failure"]}:
+        if outcome == "failure":
             return {"code": 2, "task_id": str(task_id), "recovery": recovery,
                     "response": response, "status": status}
         if status not in warned:
@@ -4597,6 +4593,9 @@ def _cost_label(cost) -> str:
         return "-"
     kind = (cost.get("type") or "").replace("_", " ")
     value, currency = cost.get("value"), cost.get("currency") or ""
+    if value in (None, "") and isinstance(cost.get("table"), list):
+        # A price table: the ceiling is the scalar (matches `usd`); `_cost_usd` shows the range.
+        value = (cost.get("fallback") or {}).get("value")
     if kind == "free":
         return "free"
     if value in (None, ""):
@@ -4822,7 +4821,12 @@ def _cost_usd(cost: dict | None) -> str:
             "per call": "call", "per result": "result", "per success": "success"}.get(cost.get("type"), "call")
     # 3 significant digits: no decision turns on the 5th decimal of a sub-cent price, and the full
     # value (plus the provider's own currency) is one `treg catalog get` away
-    return "free" if not usd else f"${usd:.3g}/{unit}"
+    if not usd:
+        return "free"
+    low = cost.get("usd_min")  # a price table: the cheapest row up to the validated ceiling
+    if isinstance(low, (int, float)) and low < usd:
+        return f"${low:.3g}-${usd:.3g}/{unit}"
+    return f"${usd:.3g}/{unit}"
 
 
 def _clip(text: str, width: int) -> str:

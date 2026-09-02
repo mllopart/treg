@@ -656,7 +656,7 @@ def test_an_extended_file_merges_into_the_same_provider(tmp_path):
     assert tiers["tikhub.tiktok.user.mix"] == "extended"
 
 
-def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inherited_mode(tmp_path):
+def test_async_defaults_apply_per_endpoint_and_an_endpoint_block_replaces_them_whole(tmp_path):
     (tmp_path / "capabilities.yaml").write_text(
         "platforms: {video-gen: Video}\ncapabilities: {video-gen.from_text: Generate}\n")
     (tmp_path / "demo.yaml").write_text(
@@ -671,15 +671,17 @@ def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inhe
         "  - id: demo.video-gen.from-text\n"
         "    capability: video-gen.from_text\n    platform: video-gen\n"
         "    method: POST\n    path: /generate\n"
-        "    async: {status: {success: [succeeded]}, interval: 20}\n"
         "    cost: {type: per_success, table: [{when: {body.model: a}, value: 1}], "
         "fallback: {value: 1, note: upper}, currency: USD}\n"
         "  - id: demo.video-gen.dynamic\n"
         "    capability: video-gen.from_text\n    platform: video-gen\n"
         "    method: POST\n    path: /dynamic\n"
         "    async:\n"
+        "      id_from: id\n"
         "      poll: {url_from: urls.get, url_hosts: [api.example.com]}\n"
+        "      status: {path: status, success: [succeeded], failure: [failed]}\n"
         "      result: {fetch: demo.video-gen.content, fetch_param: {in: pathParams, name: id, value_from: id}}\n"
+        "      interval: 20\n"
         "  - id: demo.video-gen.task.status\n    platform: video-gen\n    tier: extended\n"
         "    method: GET\n    path: /tasks/{task_id}\n"
         "  - id: demo.video-gen.content\n    platform: video-gen\n    tier: extended\n"
@@ -687,22 +689,19 @@ def test_async_defaults_merge_into_each_endpoint_and_mode_overrides_replace_inhe
 
     cat = cs.load(directory=tmp_path)
     first = cat.by_id["demo.video-gen.from-text"]
-    assert first["async"]["status"] == {
-        "path": "status", "success": ["succeeded"], "failure": ["failed"]}
-    assert first["async"]["interval"] == 20
+    assert first["async"]["status"] == {"path": "status", "success": ["done"], "failure": ["failed"]}
+    assert first["async"]["interval"] == 10
     assert first["cost"]["table"][0]["when"] == {"body.model": "a"}
+    # An endpoint block is the whole protocol: nothing from the provider default leaks into it.
     dynamic = cat.by_id["demo.video-gen.dynamic"]["async"]
     assert dynamic["poll"] == {"url_from": "urls.get", "url_hosts": ["api.example.com"]}
     assert dynamic["result"] == {
         "fetch": "demo.video-gen.content",
-        "fetch_param": {"in": "pathParams", "name": "id", "value_from": "id"},
-        "ttl_note": "1h"}
-    ambiguous = cs.merge_async_descriptor(
-        {"poll": {"endpoint": "demo.video-gen.task.status"}},
-        {"poll": {"endpoint": "demo.video-gen.task.status", "url_from": "urls.get"}},
-    )
-    assert set(ambiguous["poll"]) == {"endpoint", "url_from"}, \
-        "an invalid dual-mode override must remain visible to the validator"
+        "fetch_param": {"in": "pathParams", "name": "id", "value_from": "id"}}
+    assert dynamic["status"] == {"path": "status", "success": ["succeeded"], "failure": ["failed"]}
+    assert cs.effective_async_descriptor({"id_from": "a"}, False) is None
+    assert cs.effective_async_descriptor({"id_from": "a"}, None) == {"id_from": "a"}
+    assert cs.effective_async_descriptor(None, {"id_from": "b"}) == {"id_from": "b"}
 
 
 def test_ai_generation_taxonomy_and_chinese_alias_tokens_are_loaded():

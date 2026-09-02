@@ -666,9 +666,10 @@ class AsyncTaskRecord(SQLModel, table=True):
     poll_url: str | None = Field(default=None)
     reserved_micro: int
     descriptor: dict = Field(default_factory=dict, sa_column=Column("descriptor", JSON, nullable=False))
+    # Freezes the whole price rule with the request it was applied to, so a settlement replays
+    # from this row alone, whatever the catalog says by the time the task finishes.
     settlement_basis: dict = Field(
         default_factory=dict, sa_column=Column("settlement_basis", JSON, nullable=False))
-    request_data: dict = Field(default_factory=dict, sa_column=Column("request_data", JSON, nullable=False))
     created_at: datetime = Field(default_factory=_now, index=True)
     next_check_at: datetime = Field(index=True)
     attempts: int = Field(default=0)

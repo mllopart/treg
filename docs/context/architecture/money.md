@@ -171,18 +171,26 @@ raw integer micro-USD and never writes the ledger. Both the normal response path
 use it. Provider differences remain in catalog YAML; there are no provider billing adapters.
 
 For a tier-4 endpoint carrying `async`, a successful submission keeps its hold and writes an
-`AsyncTaskRecord`. Extraction failure is fail-closed: the row carries an error and settles at the
-reserved amount after 24 hours. BYOK calls create neither hold nor task row. The worker claims due
-rows with `FOR UPDATE SKIP LOCKED`, polls through the normal credential injector, settles success,
-fully releases failure, backs off nonterminal states, and settles the exact reserve with a reconcile
-marker at the deadline. Ledger writes remain exclusively through `domain/money`.
+`AsyncTaskRecord` whose `settlement_basis` freezes the whole price rule with the request it was
+applied to, so the settlement replays from the row alone. BYOK calls create neither hold nor task
+row. The worker claims due rows with `FOR UPDATE SKIP LOCKED`, polls through the normal credential
+injector, settles success, fully releases failure and backs off nonterminal states. **At the 24-hour
+deadline it releases the hold in full**, marks the row `timed_out` with `reconcile_review`, and logs
+an ERROR-level alert: an outcome nobody observed is the platform's cost, never the customer's, and a
+provider that silently changed its status field shows up as absorbed timeouts in
+`reconcile.async_task_settlement` (`absorbed_timeouts`) rather than as a quiet overcharge.
+Extraction failure at submission is the same shape: the row carries the error and reaches that
+deadline untouched. The only usage unit real traffic has settled is `usd` (OpenRouter's
+`usage.cost`); a token unit returns with the first metered token-priced listing, together with its fx
+rule and a live test. Ledger writes remain exclusively through `domain/money`.
 
 The audit row (`CallRecord`) froze the reserve as `cost_charged_micro` at submission, so displays
 must not read it alone. `application.asynctasks.views_for(org_id, call_ids)` is the read side: it
 joins the org's `AsyncTaskRecord`s, loads the archived terminal JSON for settled ones, and derives
 the artifact with the pure `domain.asynctasks.artifact(descriptor, terminal)` — the first URL under
-`result.path`, or the `treg call … -p <fetch_param>=<value>` command for fetch-mode descriptors,
-plus `ttl_note` — mirroring the CLI's `--await` reading of the same descriptor. `/calls`,
+`result.path`, or the `{endpoint, name, value}` retrieval target for fetch-mode descriptors (the
+view formats it as `treg call … -p name=value`), plus `ttl_note`. The CLI's `--await` calls the
+same function; there is one reading of the descriptor, not a mirror. `/calls`,
 `/calls/{ref}`, `treg audit` and the dashboard Activity page all render from this one view.
 
 **Idempotency on `topup` is enforced by the database.** `stripe_payment_intent` is UNIQUE, and `topup`

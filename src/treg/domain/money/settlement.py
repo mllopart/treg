@@ -103,7 +103,7 @@ def derive_basis(
     if cost.get("table") or cost.get("settle") == "usage":
         fallback = _micro(float(cost["fallback"]["value"]), unit_micro)
         if cost.get("settle") == "usage":
-            amount = {"kind": "usage", "unit_micro": unit_micro, **dict(cost["usage"])}
+            amount = {"kind": "usage", **dict(cost["usage"])}
             reserve = fallback
         else:
             amount = {"kind": "table", "cost": cost, "input": input_schema,
@@ -133,8 +133,6 @@ def settle(basis: dict, evidence: dict[str, Any]) -> int:
                 and value >= 0:
             if amount.get("unit") == "usd":
                 return _micro(float(value), 1_000_000)
-            if amount.get("unit") == "token" and isinstance(amount.get("unit_micro"), int):
-                return _micro(float(value), int(amount["unit_micro"]))
     if kind == "observed":
         observed = evidence.get("observed_micro")
         if isinstance(observed, int) and not isinstance(observed, bool) and observed >= 0:

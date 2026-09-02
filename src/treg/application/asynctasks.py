@@ -58,7 +58,6 @@ async def defer_submission(mk, body: bytes, org_id: int) -> int:
             endpoint_id=mk.endpoint_id, task_id=task_id, poll_url=poll_url,
             reserved_micro=hold.amount_micro, descriptor=_json_value(mk.async_descriptor or {}),
             settlement_basis=_json_value(mk.settlement_basis),
-            request_data=_json_value(mk.request_data),
             created_at=now, next_check_at=due, error=error,
         ))
         await db.commit()
@@ -103,7 +102,10 @@ async def views_for(org_id: int, call_ids: list[str]) -> dict[str, dict]:
             except ValueError:
                 found = {}
             view["result_url"] = found.get("result_url")
-            view["fetch_command"] = found.get("fetch_command")
+            fetch = found.get("fetch")
+            if fetch:
+                view["fetch_command"] = (
+                    f"treg call {fetch['endpoint']} -p {fetch['name']}={fetch['value']}")
         views[row.call_id] = view
     return views
 
@@ -200,12 +202,20 @@ async def _finish(call_id: str, outcome: str, document: object | None, now) -> s
             row.settled_micro = 0
             row.status = asynctasks.RELEASED
         elif outcome == "timed_out":
-            row.settled_micro = await ledger.settle_in_transaction(db, row.call_id, None, meta={
-                "provider": row.provider, "cost_source": "reserved_fallback",
-                "async_task": True, "reconcile_review": True,
-            })
+            # No terminal state in 24 hours means treg does not know whether the caller got
+            # anything. The platform absorbs that uncertainty: the hold goes back to the team in
+            # full, the upstream charge (if any) is treg's, and the row is flagged for a human.
+            # Charging the reserve here would bill a customer for an outcome nobody observed.
+            await ledger.release_in_transaction(db, row.call_id, reason="async_task_timed_out",
+                                                meta={"provider": row.provider, "async_task": True,
+                                                      "reconcile_review": True})
+            row.settled_micro = 0
             row.status = asynctasks.TIMED_OUT
-            row.error = "terminal state not observed within 24 hours"
+            row.error = "terminal state not observed within 24 hours; hold released, platform absorbs"
+            log.error("ASYNC TASK TIMED OUT: call %s on %s (%s) had no terminal state in 24h; "
+                      "released %d micro-USD to the team, platform absorbs the upstream charge — "
+                      "check whether the provider changed its status field",
+                      row.call_id, row.provider, row.endpoint_id, row.reserved_micro)
         else:
             row.next_check_at = asynctasks.next_check(now, row.attempts)
             await db.commit()

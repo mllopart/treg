@@ -185,24 +185,32 @@ async def test_worker_backs_off_unknown_status(
         assert await db.get(Hold, call_id) is not None
 
 
-async def test_worker_timeout_settles_exact_reserved_amount(
-    clients: AsyncClient, monkeypatch, replicate_platform,
+async def test_worker_timeout_releases_the_hold_and_flags_it_for_review(
+    clients: AsyncClient, monkeypatch, replicate_platform, caplog,
 ):
+    """An outcome nobody observed is the platform's cost, never the customer's."""
     call_id = await _due_submission(clients, monkeypatch, {"status": "processing"})
     async with session_maker() as db:
         row = await db.get(AsyncTaskRecord, call_id)
         row.created_at = utcnow_naive() - asynctasks.MAX_AGE - timedelta(seconds=1)
         row.next_check_at = utcnow_naive() - timedelta(seconds=1)
         await db.commit()
-    result = await task_app.settle_due()
+    with caplog.at_level("ERROR", logger="treg.asynctasks"):
+        result = await task_app.settle_due()
     async with session_maker() as db:
         row = await db.get(AsyncTaskRecord, call_id)
+        hold = await db.get(Hold, call_id)
+        entry = (await db.execute(select(LedgerEntry).where(
+            LedgerEntry.call_id == call_id, LedgerEntry.kind == "release"))).scalar_one()
     assert result.timed_out == 1
-    assert row.status == "timed_out" and row.settled_micro == row.reserved_micro == 3000
+    assert row.status == "timed_out" and row.settled_micro == 0 and row.reserved_micro == 3000
+    assert hold is None and entry.meta.get("reconcile_review") is True
+    assert any("ASYNC TASK TIMED OUT" in rec.message for rec in caplog.records)
     async with session_maker() as db:
         report = await reconcile.async_task_settlement(
             db, utcnow_naive() - timedelta(hours=1))
-    assert [item["call_id"] for item in report["fallback_settlements"]] == [call_id]
+    assert [item["call_id"] for item in report["absorbed_timeouts"]] == [call_id]
+    assert report["absorbed_timeouts"][0]["reserved_micro"] == 3000
 
 
 def test_basis_derivation_and_settlement_table_vs_usage():
@@ -295,13 +303,14 @@ def test_artifact_reads_both_result_modes():
     by_path = {"result": {"path": "task.content.url", "ttl_note": "time-limited"}}
     found = asynctasks.artifact(by_path, {"task": {"content": {"url": "https://x.invalid/v.mp4"}}})
     assert found["result_url"] == "https://x.invalid/v.mp4" and found["ttl_note"] == "time-limited"
-    assert found["fetch_command"] is None
+    assert found["fetch"] is None
     by_fetch = {"result": {"fetch": "minimax.video-gen.result.retrieve",
                            "fetch_param": {"in": "queryParams", "name": "file_id",
                                            "value_from": "file_id"},
                            "ttl_note": "9h"}}
     found = asynctasks.artifact(by_fetch, {"status": "Success", "file_id": "f-1"})
     assert found["result_url"] is None
-    assert found["fetch_command"] == "treg call minimax.video-gen.result.retrieve -p file_id=f-1"
-    assert asynctasks.artifact(by_fetch, {"status": "Success"})["fetch_command"] is None
+    assert found["fetch"] == {"endpoint": "minimax.video-gen.result.retrieve",
+                              "name": "file_id", "value": "f-1"}
+    assert asynctasks.artifact(by_fetch, {"status": "Success"})["fetch"] is None
     assert asynctasks.artifact({}, {"anything": 1})["result_url"] is None

@@ -321,7 +321,7 @@ def test_cost_table_checks_enum_bounds_numeric_times_and_usage_shape():
     assert any("requires usage.path and usage.unit" in error for error in _table_errors(usage))
 
 
-def test_validator_checks_provider_async_defaults_after_endpoint_merge(tmp_path, monkeypatch, capsys):
+def test_validator_checks_the_endpoint_descriptor_that_replaces_the_provider_default(tmp_path, monkeypatch, capsys):
     (tmp_path / "capabilities.yaml").write_text(
         "platforms: {video-gen: Video}\n"
         "capabilities: {video-gen.from_text: Generate}\n")
@@ -346,7 +346,12 @@ def test_validator_checks_provider_async_defaults_after_endpoint_merge(tmp_path,
         "      body:\n"
         "        model: {type: string, required: true}\n"
         "        duration: {type: integer, required: false, default: 6, max: 10}\n"
-        "    async: {status: {success: [succeeded]}}\n"
+        "    async:\n"
+        "      id_from: task_id\n"
+        "      poll: {url_from: urls.get, url_hosts: [api.example.com]}\n"
+        "      status: {path: status, success: [succeeded], failure: [failed]}\n"
+        "      result: {path: output.url}\n"
+        "      interval: 10\n"
         "    cost:\n"
         "      type: per_success\n"
         "      table: [{when: {body.model: H3}, value: 0.13, times: body.duration}]\n"

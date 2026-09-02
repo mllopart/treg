@@ -325,11 +325,12 @@ endpoints:
 ### Async descriptors
 
 An asynchronous submission endpoint may carry an `async:` descriptor. A provider file may put the
-same block at top level as a default for every endpoint in that file; an endpoint block recursively
-overrides individual fields. Selecting `poll.endpoint` versus `poll.url_from`, or `result.path`
-versus `result.fetch`, replaces the inherited mode and its companion fields. `catalog_store` serves
-the complete effective descriptor on the normalized endpoint. An explicit endpoint `async: false`
-opts a utility or synchronous endpoint out of the provider default; absence means inherit.
+same block at top level as a default for every endpoint in that file; an endpoint block **replaces
+it whole** (`effective_async_descriptor`): a descriptor is one protocol, and a protocol that differs
+in one axis differs in poll target, status vocabulary and result location together (MiniMax v2
+against v1), so a field-wise merge only produced descriptors nobody had written down. `catalog_store`
+serves the effective descriptor on the normalized endpoint. An explicit endpoint `async: false` opts
+a utility or synchronous endpoint out of the provider default; absence means inherit.
 
 ```yaml
 async:
@@ -353,7 +354,13 @@ async:
   interval: 10
 ```
 
-The validator checks the merged descriptor. Dotted JSON paths are syntactically valid; success and
+A `cost.table` also prices out as a range: at load time `_table_floor` computes the cheapest row
+(a `times` row at its field's declared `min`) into `cost.table_min`, and `cost_view` exposes it as
+`usd_min` beside `usd`, which stays the validated ceiling (what reserve and eligibility read). Every
+price surface — the wall, `treg catalog search`, the dashboard, `/access` — shows `$low-$high` for a
+table rather than the worst case alone.
+
+The validator checks the effective descriptor. Dotted JSON paths are syntactically valid; success and
 failure are non-empty, disjoint lists; `interval` is positive; poll has exactly one of `endpoint`
 or `url_from`; result has exactly one of `path` or `fetch`; every descriptor block rejects unknown
 keys. Status values are compared after string coercion on both sides; a missing or unrecognized value

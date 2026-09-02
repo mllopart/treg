@@ -903,12 +903,13 @@ async def _execute_call(request: _ApplicationRequest, upstream_client: httpx.Asy
                     observed = None
                     request.context.finalization = FinalizationState.FINALIZED
                 except Exception as exc:  # noqa: BLE001 — an accepted task must never orphan a hold
+                    # Settles the frozen basis now (the table row, or the fallback for a usage
+                    # basis with no terminal evidence yet) rather than leaving a hold nobody owns.
                     logging.getLogger("treg.asynctasks").error(
-                        "pending-row persistence failed for call %s; settling its reserve: %s",
+                        "pending-row persistence failed for call %s; settling its basis now: %s",
                         call_ref, exc, exc_info=True)
                     charged, observed = await _platform_settle(
                         mk, response.status, body,
-                        observed_override=int(mk.settlement_basis.get("fallback_micro") or 0),
                         finalized=lambda: setattr(
                             request.context, "finalization", FinalizationState.FINALIZED),
                     )

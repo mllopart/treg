@@ -32,7 +32,6 @@ def upgrade() -> None:
         sa.Column("reserved_micro", sa.Integer(), nullable=False),
         sa.Column("descriptor", sa.JSON(), nullable=False),
         sa.Column("settlement_basis", sa.JSON(), nullable=False),
-        sa.Column("request_data", sa.JSON(), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
         sa.Column("next_check_at", sa.DateTime(), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False),

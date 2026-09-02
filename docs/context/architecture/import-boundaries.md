@@ -107,6 +107,12 @@ module scope. `tests.test_import_lightness` closes that gap by starting an isola
 importing every lightweight module, and asserting that no server dependency root appears in `sys.modules`.
 Base dependencies such as httpx and questionary remain allowed.
 
+The async task domain (`treg.domain.asynctasks`) is a **stdlib-only leaf shared with the light
+CLI**: `cli.await_async_task` imports its `json_path`, `classify_terminal` and `artifact` so the
+awaiter and the settlement worker can never disagree about what "done" means. Two guards keep it
+light: the module is on `test_import_lightness`'s list, and an import-linter contract forbids it
+every server root (`treg.models`, `treg.infra`, `treg.config`, SQLModel, pydantic, yaml, httpx).
+
 The capacity domain (`treg.domain.capacity`, plan step B) is a leaf like identity: it cannot import
 `treg.api`, `treg.routers`, `treg.application`, `treg.bootstrap`, `treg.audit`, FastAPI or Starlette.
 It reads config and writes only its own tables and ratestore keys, from worker-profile commands
