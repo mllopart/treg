@@ -13,7 +13,7 @@ from treg.application import asynctasks as task_app
 from treg.application.call import service as call_service
 from treg.application.call.types import UpstreamResponse
 from treg.config import get_settings
-from treg import reconcile
+from treg import archive, audit, reconcile
 from treg.domain import asynctasks
 from treg.domain import money as ledger
 from treg.domain.money import settlement
@@ -246,3 +246,62 @@ def test_terminal_classification_coerces_status_values_and_treats_none_as_progre
     assert asynctasks.classify_terminal(descriptor, {"task": {"status": 3}}) == "failure"
     assert asynctasks.classify_terminal(descriptor, {"task": {"status": None}}) == "progress"
     assert asynctasks.classify_terminal(descriptor, {"task": {}}) == "progress"
+
+
+async def _activity_row(clients: AsyncClient, call_id: str) -> dict:
+    await audit.drain()
+    await archive.drain()
+    rows = (await clients.get("/calls")).json()
+    return next(row for row in rows if row["call_ref"] == call_id)
+
+
+async def test_activity_reports_task_state_and_artifact(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    """The audit row froze the reserve as the charge; the feed must show what actually happened."""
+    call_id = await _due_submission(clients, monkeypatch, {
+        "status": "succeeded", "output": ["https://replicate.delivery/out.webp"]})
+    pending = await _activity_row(clients, call_id)
+    assert pending["cost_charged_micro"] is None
+    assert pending["async_task"]["status"] == "pending"
+    assert pending["async_task"]["reserved_micro"] == 3000
+    assert pending["async_task"]["result_url"] is None
+
+    assert (await task_app.settle_due()).settled == 1
+    settled = await _activity_row(clients, call_id)
+    assert settled["cost_charged_micro"] == 3000
+    task = settled["async_task"]
+    assert task["status"] == "settled" and task["settled_micro"] == 3000
+    assert task["result_url"] == "https://replicate.delivery/out.webp"
+    assert task["completed_at"] is not None
+
+    one = (await clients.get(f"/calls/{call_id}")).json()
+    assert one["async_task"]["result_url"] == "https://replicate.delivery/out.webp"
+    assert one["call"]["cost_charged_micro"] == 3000 and one["charged_micro"] == 3000
+
+
+async def test_activity_reports_refund_after_failure(
+    clients: AsyncClient, monkeypatch, replicate_platform,
+):
+    call_id = await _due_submission(clients, monkeypatch, {"status": "failed", "error": "nsfw"})
+    assert (await task_app.settle_due()).released == 1
+    row = await _activity_row(clients, call_id)
+    assert row["cost_charged_micro"] == 0
+    assert row["async_task"]["status"] == "released"
+    assert row["async_task"]["result_url"] is None
+
+
+def test_artifact_reads_both_result_modes():
+    by_path = {"result": {"path": "task.content.url", "ttl_note": "time-limited"}}
+    found = asynctasks.artifact(by_path, {"task": {"content": {"url": "https://x.invalid/v.mp4"}}})
+    assert found["result_url"] == "https://x.invalid/v.mp4" and found["ttl_note"] == "time-limited"
+    assert found["fetch_command"] is None
+    by_fetch = {"result": {"fetch": "minimax.video-gen.result.retrieve",
+                           "fetch_param": {"in": "queryParams", "name": "file_id",
+                                           "value_from": "file_id"},
+                           "ttl_note": "9h"}}
+    found = asynctasks.artifact(by_fetch, {"status": "Success", "file_id": "f-1"})
+    assert found["result_url"] is None
+    assert found["fetch_command"] == "treg call minimax.video-gen.result.retrieve -p file_id=f-1"
+    assert asynctasks.artifact(by_fetch, {"status": "Success"})["fetch_command"] is None
+    assert asynctasks.artifact({}, {"anything": 1})["result_url"] is None

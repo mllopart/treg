@@ -177,6 +177,14 @@ rows with `FOR UPDATE SKIP LOCKED`, polls through the normal credential injector
 fully releases failure, backs off nonterminal states, and settles the exact reserve with a reconcile
 marker at the deadline. Ledger writes remain exclusively through `domain/money`.
 
+The audit row (`CallRecord`) froze the reserve as `cost_charged_micro` at submission, so displays
+must not read it alone. `application.asynctasks.views_for(org_id, call_ids)` is the read side: it
+joins the org's `AsyncTaskRecord`s, loads the archived terminal JSON for settled ones, and derives
+the artifact with the pure `domain.asynctasks.artifact(descriptor, terminal)` — the first URL under
+`result.path`, or the `treg call … -p <fetch_param>=<value>` command for fetch-mode descriptors,
+plus `ttl_note` — mirroring the CLI's `--await` reading of the same descriptor. `/calls`,
+`/calls/{ref}`, `treg audit` and the dashboard Activity page all render from this one view.
+
 **Idempotency on `topup` is enforced by the database.** `stripe_payment_intent` is UNIQUE, and `topup`
 FLUSHES its INSERT inside a SAVEPOINT, before the balance moves: the loser of a race rolls back only
 that savepoint - the caller's other staged work survives - and its re-SELECT returns the winner's

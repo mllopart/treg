@@ -242,6 +242,39 @@ async def store_terminal_response(
                      _STORE_TIMEOUT_S)
 
 
+async def load_terminal_responses(call_ids: list[str]) -> dict[str, bytes]:
+    """The archived terminal JSON for each call id that has one. Bytes only, verbatim: the caller
+    decides how to read them. Misses are absent from the mapping, never None."""
+    if not call_ids:
+        return {}
+    from sqlalchemy import select
+
+    from .infra.db import session_maker
+    from .models import ArchiveKey, ArchiveSnapshot
+
+    urls = {f"treg://asynctasks/{call_id}": call_id for call_id in call_ids}
+    out: dict[str, bytes] = {}
+    async with session_maker() as s:
+        keys = (await s.execute(
+            select(ArchiveKey).where(ArchiveKey.req_url.in_(list(urls))))).scalars().all()
+        if not keys:
+            return out
+        by_key = {k.id: urls[k.req_url] for k in keys}
+        snaps = (await s.execute(
+            select(ArchiveSnapshot).where(ArchiveSnapshot.key_id.in_(list(by_key)))
+            .order_by(ArchiveSnapshot.key_id, ArchiveSnapshot.version.desc()))).scalars().all()
+        newest: dict[int, ArchiveSnapshot] = {}
+        for snap in snaps:
+            newest.setdefault(snap.key_id, snap)
+        for key_id, snap in newest.items():
+            body = snap.body
+            if body is None and snap.body_of is not None:
+                body = (await s.get(ArchiveSnapshot, snap.body_of)).body
+            if body is not None:
+                out[by_key[key_id]] = body
+    return out
+
+
 async def drain() -> None:
     """Flush in-flight recordings — shutdown and tests. Bounded: every task carries its own
     _STORE_TIMEOUT_S, so this cannot wait longer than the slowest permitted recording."""

@@ -66,6 +66,48 @@ async def defer_submission(mk, body: bytes, org_id: int) -> int:
     return int(hold.amount_micro)
 
 
+async def views_for(org_id: int, call_ids: list[str]) -> dict[str, dict]:
+    """The task's own account of each metered async call, keyed by call id, for activity displays.
+
+    The audit row froze the reserve as "charged" at submission; this is where the display learns
+    what actually happened (settled amount, refund, 24-hour fallback) and what the caller bought.
+    Terminal JSON comes from the archive; a settled task whose recording was shed still reports its
+    money truthfully, only without a link.
+    """
+    if not call_ids:
+        return {}
+    async with session_maker() as db:
+        rows = (await db.execute(
+            select(AsyncTaskRecord).where(
+                AsyncTaskRecord.org_id == org_id,
+                AsyncTaskRecord.call_id.in_(list(call_ids))))).scalars().all()
+    if not rows:
+        return {}
+    documents = await archive.load_terminal_responses(
+        [row.call_id for row in rows if row.status == asynctasks.SETTLED])
+    views: dict[str, dict] = {}
+    for row in rows:
+        view = {
+            "status": row.status, "task_id": row.task_id,
+            "reserved_micro": row.reserved_micro, "settled_micro": row.settled_micro,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            "error": row.error or None,
+            "result_url": None, "fetch_command": None,
+            "ttl_note": ((row.descriptor.get("result") or {}).get("ttl_note") or None),
+        }
+        body = documents.get(row.call_id)
+        if body is not None:
+            try:
+                found = asynctasks.artifact(row.descriptor, json.loads(body))
+            except ValueError:
+                found = {}
+            view["result_url"] = found.get("result_url")
+            view["fetch_command"] = found.get("fetch_command")
+        views[row.call_id] = view
+    return views
+
+
 @dataclass(frozen=True)
 class TickResult:
     claimed: int = 0

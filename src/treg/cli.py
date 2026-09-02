@@ -2558,7 +2558,12 @@ def cmd_audit(args, cfg) -> None:
     rows = [
         {"kind": "call", "id": f"c{x['id']}", "user_email": x.get("user_email"),
          "tool": x.get("tool_name"), "detail": f"{x.get('method', '')} {x.get('path', '')}".strip(),
-         "result": x.get("status_code"), "where": "proxy", "created_at": x.get("created_at")}
+         "result": x.get("status_code"), "where": "proxy", "created_at": x.get("created_at"),
+         # A metered async task (generation): how it settled and where its artifact is. `treg calls`
+         # carries the full block verbatim; this is the merged view's one-line reading of it.
+         **({"task": {k: x["async_task"].get(k) for k in
+                      ("status", "settled_micro", "result_url", "fetch_command", "ttl_note")}}
+            if x.get("async_task") else {})}
         for x in calls
     ] + [
         {"kind": "run", "id": r.get("id"), "user_email": r.get("user_email"), "tool": r.get("tool"),

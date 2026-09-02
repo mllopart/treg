@@ -295,6 +295,13 @@ Server side (`domain.identity.access`): `require_identity` (who, from token OR s
 - **Activity** — one time-sorted feed (`activityRows`) merging `GET /calls` (proxy calls) + `GET /runs`
   (CLI executions). Local runs now arrive via `/runs` (tagged `where`), so the calls feed **excludes**
   `local_run` rows to avoid double-counting, and each run row shows a **local/server** chip.
+  A row whose `/calls` payload carries `async_task` (a metered generation) renders the task's state
+  as a chip next to the HTTP badge (`taskStateLabel`: `generating…` / `done` / `failed · refunded` /
+  `timed out`), shows the reserve as **`hold $x`** while pending (the server nulls the charge until
+  the task settles), and once done appends the artifact to the Action cell: a `result ↗` link to the
+  provider's time-limited URL (tooltip from `taskArtifactTitle` carries the `ttl_note` and when it
+  was generated) or a `result via CLI` chip whose tooltip is the retrieval command for fetch-mode
+  routes. treg never proxies or stores the media itself.
 - **Admin** — nav auto-appears iff the caller is `is_superadmin` (read from `/auth/me` on boot — **not**
   by probing `/admin/stats`, which would 403 + log a console error on every load for normal users); `loadAdmin` fetches `stats` + `orgs` + `users` only when you open the panel. Shows `stats` + `orgs` + `users`, each
   with **mutations** (`_adm` helper): `admGrant`/`admSuspendUser`/`admDeleteUser`,

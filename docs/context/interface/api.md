@@ -561,6 +561,11 @@ validated before resolving the shared HTTP client. `/auth/logout` remains an HTT
   "we said no"). It does **not** carry `error_request`/`error_response`, and defers them so they are
   not even fetched: the captured evidence is admin-only in v1, and putting it on a team's own feed
   has to be a deliberate edit in two places rather than a column appearing by accident.
+  A metered async submission audited its RESERVE as `cost_charged_micro`; both `list_calls` and
+  `get_call` therefore join `application.asynctasks.views_for` on `call_ref` and add `async_task`
+  (`status`, `task_id`, `reserved_micro`, `settled_micro`, `completed_at`, `error`, `result_url`,
+  `fetch_command`, `ttl_note`) while `_async_charged` rewrites the charge to what actually hit the
+  balance — `null` while pending, the settled figure (0 after a refund) at a terminal state.
 - **OAuth connect + the provider marketplace:** `oauth_start` (`POST /oauth/start`) creates a
   `PendingOAuth` and returns `consent_url` + `state` + `redirect_uri`; `oauth_callback`
   (`GET /oauth/callback`, open) exchanges the code and creates/updates the oauth secret; `oauth_status`
@@ -789,7 +794,7 @@ if returning the hold itself fails, the money comes back when the hold is reaped
 | Route | Does |
 |---|---|
 | `GET /calls?days=&before_id=&limit=` | this team's calls, windowed and pageable. Analytics — **not** an invoice source |
-| `GET /calls/{call_ref}` | one call by its `X-Treg-Call-Id`, plus the ledger entries for it |
+| `GET /calls/{call_ref}` | one call by its `X-Treg-Call-Id`, plus the ledger entries for it and its `async_task` view when it was a metered generation |
 | `GET /orgs/{id}/usage/by-tag?key=&days=` | per-value spend for one tag key. **Money from the ledger**; admin+ |
 | `GET/PUT/DELETE /orgs/{id}/budgets[/{dim}/{val}]` | per-tag limits and blocking; admin+ |
 | `GET/PATCH /orgs/{id}/settings` | the team's daily spend cap, budget dimensions and primary dimension |
