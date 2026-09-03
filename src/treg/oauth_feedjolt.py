@@ -26,7 +26,8 @@ FEEDJOLT = OAuthProvider(
         "Copy the key. It starts with fjk_.",
     ),
     setup_note=(
-        "REST calls are included in the plan, not billed per call. "
+        "Main agent auth is OAuth 2.1 on the MCP servers (DCR/PKCE; not this catalog). "
+        "This listing is REST: API keys (fjk_) also work. REST calls are included in the plan, not billed per call. "
         "GET /workspaces is the probe. Do not use GET /health — it is unauthenticated. "
         "A garbage Bearer/X-API-Key returns 401 {\"detail\":\"Invalid or revoked API key\"}."
     ),
