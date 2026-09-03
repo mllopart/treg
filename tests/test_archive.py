@@ -841,3 +841,144 @@ async def test_endpoint_stats_match_direct_aggregation(clients: AsyncClient, sha
         assert st.bodies_kept == sum(1 for x in snaps if x.body is not None)
         assert st.kept_bytes == sum(x.size_bytes for x in snaps if x.body is not None)
         assert st.newest_fetch is not None
+
+
+async def test_big_bodies_compress_and_serve_back_identical(clients: AsyncClient, serve, monkeypatch):
+    """A compressible body is stored smaller (enc='zlib') and the serve path returns the exact
+    original bytes; a tiny body stays raw (enc NULL). size_bytes always reports the RAW size."""
+    from tests.test_marketplace_call import _fake_relay
+    big = ('{"rows": [' + ",".join('{"name": "creator-%d", "followers": 1000}' % i
+                                   for i in range(200)) + "]}").encode()
+    monkeypatch.setattr(call_service, "relay", _fake_relay(200, big))
+    r1 = await clients.get(f"/call/{EP}?aweme_id=7")
+    await archive.drain()
+    _, snaps = await _rows()
+    assert snaps[0].enc == "zlib" and len(snaps[0].body) < len(big)
+    assert snaps[0].size_bytes == len(big)
+    r2 = await clients.get(f"/call/{EP}?aweme_id=7")     # a hit, decompressed on the way out
+    assert r2.headers.get("x-treg-cache") == "hit" and r2.content == big == r1.content
+
+    monkeypatch.setattr(call_service, "relay", _fake_relay(200, b'{"n": 1}'))
+    await clients.get(f"/call/{EP}?aweme_id=8")
+    await archive.drain()
+    _, snaps = await _rows()
+    tiny = [s for s in snaps if s.size_bytes == len(b'{"n": 1}')]
+    assert tiny and tiny[0].enc is None                  # below the 256-byte floor: raw
+
+
+async def test_compressed_change_detection_still_compares_raw(clients: AsyncClient, shadow, monkeypatch):
+    """The noise/change compare must unpack the previous body first — a compressed v1 against a
+    raw-diffed v2 still counts stable/changed correctly."""
+    from tests.test_marketplace_call import _fake_relay
+    a = ('{"data": "' + "x" * 400 + '", "n": 1}').encode()
+    b = ('{"data": "' + "x" * 400 + '", "n": 2}').encode()
+    monkeypatch.setattr(call_service, "relay", _fake_relay(200, a))
+    await clients.get(f"/call/{EP}?aweme_id=7")
+    await archive.drain()
+    monkeypatch.setattr(call_service, "relay", _fake_relay(200, b))
+    await clients.get(f"/call/{EP}?aweme_id=7")
+    await archive.drain()
+    keys, _ = await _rows()
+    assert keys[0].change_seen == 1 and keys[0].stable_seen == 0
+
+
+# ---------------------------------------------------------------------------------------------
+# The pruner (profit-shaped): strip bytes that cannot earn, never rows, never the newest body
+
+async def _age_versions(days: int):
+    from datetime import timedelta
+    async with session_maker() as s:
+        for v in (await s.execute(select(ArchiveSnapshot))).scalars().all():
+            v.fetched_at = v.fetched_at - timedelta(days=days)
+            s.add(v)
+        for k in (await s.execute(select(ArchiveKey))).scalars().all():
+            if k.last_requested_at is not None:
+                k.last_requested_at = k.last_requested_at - timedelta(days=days)
+            s.add(k)
+        await s.commit()
+
+
+async def test_pruner_strips_old_undemanded_bodies_keeps_rows(clients: AsyncClient, shadow, monkeypatch):
+    from tests.test_marketplace_call import _fake_relay
+    for n in range(4):                                   # 4 distinct answers → 4 stored bodies
+        monkeypatch.setattr(call_service, "relay",
+                            _fake_relay(200, b'{"v": %d, "pad": "%s"}' % (n, b"x" * 300)))
+        await clients.get(f"/call/{EP}?aweme_id=7")
+        await archive.drain()
+    await _age_versions(days=30)                         # old AND undemanded
+    assert await archive.prune_once() == 2               # newest 2 bodies kept, 2 stripped
+    keys, snaps = await _rows()
+    assert len(snaps) == 4                               # rows never deleted
+    bodies = [s for s in snaps if s.body is not None]
+    assert len(bodies) == 2
+    assert max(s.version for s in bodies) == 4           # the newest survives whole
+    from treg.models import ArchiveEndpointStat
+    async with session_maker() as s:
+        st = (await s.execute(select(ArchiveEndpointStat)
+                              .where(ArchiveEndpointStat.endpoint_id == EP))).scalars().one()
+        assert st.bodies_kept == 2                       # totals moved with the strip
+    assert await archive.prune_once() == 0               # idempotent — nothing left to strip
+
+
+async def test_pruner_never_cache_keeps_only_newest(clients: AsyncClient, shadow, monkeypatch):
+    from tests.test_marketplace_call import _fake_relay
+    for n in range(3):
+        monkeypatch.setattr(call_service, "relay",
+                            _fake_relay(200, b'{"v": %d, "pad": "%s"}' % (n, b"y" * 300)))
+        await clients.get(f"/call/{EP}?aweme_id=7")
+        await archive.drain()
+    async with session_maker() as s:                     # the learner's verdict, set directly
+        k = (await s.execute(select(ArchiveKey))).scalars().one()
+        k.ttl_s = archive.TTL_NEVER
+        s.add(k); await s.commit()
+    assert await archive.prune_once() == 2               # young age is no defense for never-cache
+    _, snaps = await _rows()
+    assert sum(1 for x in snaps if x.body is not None) == 1
+    assert next(x.version for x in snaps if x.body is not None) == 3
+
+
+async def test_pruner_spares_demanded_and_carriers(clients: AsyncClient, shadow, monkeypatch):
+    from tests.test_marketplace_call import _fake_relay
+    monkeypatch.setattr(call_service, "relay", _fake_relay(200, b'{"stable": "%s"}' % (b"z" * 300)))
+    for _ in range(4):                                   # identical → v1 carries, v2-4 reference
+        await clients.get(f"/call/{EP}?aweme_id=7")
+        await archive.drain()
+    await _age_versions(days=30)
+    async with session_maker() as s:                     # but the key was demanded YESTERDAY
+        from datetime import timedelta
+        k = (await s.execute(select(ArchiveKey))).scalars().one()
+        k.last_requested_at = archive._utcnow() - timedelta(days=1)
+        s.add(k); await s.commit()
+    assert await archive.prune_once() == 0               # demanded recently: full budget kept
+    _, snaps = await _rows()
+    assert snaps[0].body is not None                     # v1 the carrier untouched
+
+
+async def test_recorder_concurrency_is_throttled(clients: AsyncClient, shadow, monkeypatch):
+    """A burst of recordings may QUEUE, but at most _MAX_CONCURRENT_WRITES touch the database at
+    once — the pool-pressure guarantee. Measured by instrumenting the locked store."""
+    import asyncio as aio
+    peak = 0
+    active = 0
+    real = archive._store_locked
+
+    async def counting(**kw):
+        nonlocal peak, active
+        active += 1
+        peak = max(peak, active)
+        try:
+            await aio.sleep(0.01)          # hold the slot long enough for overlap to show
+            return await real(**kw)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(archive, "_store_locked", counting)
+    for i in range(12):                    # 12 concurrent recordings, one per key
+        archive.record(method="GET", endpoint_id=EP, provider="tikhub",
+                       url=f"https://api.example/x?aweme_id={i}", caller_body=b"",
+                       headers={}, status_code=200, media_type="application/json",
+                       body=b'{"n": %d}' % i)
+    await archive.drain()
+    assert peak <= archive._MAX_CONCURRENT_WRITES
+    keys, _ = await _rows()
+    assert len(keys) == 12                 # throttled, not shed: every recording landed

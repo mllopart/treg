@@ -238,3 +238,38 @@ table once from the live archive and adds a partial index over refresh-origin sn
 "refreshes today" count; a 30s in-process report cache remains as the belt against poll stacking
 (cleared per test beside the drains). A dropped recording drops its counter bumps with it — the
 rollup rides the recording's own commit, so the two cannot drift.
+
+## Body compression (2026-09-03)
+
+Stored bodies compress with zlib level 6 when it shrinks them (`enc` column: NULL = raw, "zlib");
+bodies under 256 bytes stay raw. Measured on 40 real prod bodies: 5.2x, 68 MB/s in, ~1 GB/s out —
+the recorder writes under 1 MB/s, so the cost is invisible and ~6.5 GB/day becomes ~1.25 GB/day.
+Every reader unpacks (serve lookup, the dedup-carrier follow, the noise/change compare, the
+call-result reader, the panel's body viewer), so the caller always receives the exact original
+bytes; `size_bytes` and `content_hash` describe RAW bytes always, keeping dedup and statistics
+semantics unmoved. Rows from before migration 0014 stay raw and readable forever. The founder's
+keys-vs-values idea was examined and declined: compression removes repeated JSON keys anyway, and
+rebuilding JSON from stored values risks the byte-verbatim promise the hashes depend on.
+
+## The pruner (2026-09-03)
+
+Profit-shaped shelf clearing: a served hit is revenue with no vendor cost, so a body's right to
+disk is its earning potential. `prune_once` strips BYTES only — every version row keeps its hash,
+size and timestamp, the newest version of every key stays whole (serving and change-detection
+need it), and the strip set is decided before carrier protection so a surviving dedup reference
+never loses its carrier. Rank of removal: never-servable keys (TTL_NEVER) keep exactly one body,
+age no defense; then old (`archive_prune_min_age_days`, 7) versions beyond the newest
+`archive_prune_keep_versions` (2) on keys undemanded for 14 days. Archive-policy endpoints are
+exempt — their history is the future data product. Runs from the lifespan beside the refresh
+worker whenever the archive records, `archive_prune_batch` (500) bodies per pass per
+`archive_prune_interval_s` (3600); batch 0 disables. Rollup counters (bodies_kept, kept_bytes)
+move atomically with each strip.
+
+## Recorder throttle (2026-09-03)
+
+At most `_MAX_CONCURRENT_WRITES` (4) recordings touch the database at once — audit's exact
+loop-bound-semaphore pattern. Before it, a burst could put up to 512 concurrent short sessions in
+front of the API's 15-slot pool (SToneX's pool-pressure report). Queued recordings wait inside
+their fire-and-forget task, so the caller is unaffected; the 30s bound covers wait+write, so a
+stuck queue still sheds rather than wedges. Throttled, not shed: the burst test proves all 12
+concurrent recordings land while peak DB concurrency stays ≤4.
