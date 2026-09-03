@@ -2,7 +2,7 @@ provider: feedjolt
 source:
   docs: https://www.feedjolt.com/en/docs/developers
   openapi: https://api.feedjolt.com/openapi.json
-  curated: 2026-09-02
+  curated: 2026-09-03
 # BYOK listing. REST+MCP sit in Feedjolt's premium set (Startup $9/mo monthly, Scale $15/mo
 # annual). There is no per-call meter and no rate-card endpoint, so treg cannot serve these on
 # its own key yet. Authenticated routes are own_account workspace data.
@@ -216,9 +216,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Probe. Garbage Bearer/X-API-Key returns 401 {\"detail\":\"Invalid or revoked API key\"}. Cookie-missing (no auth) returns 401 {\"detail\":\"Not authenticated\"}. Valid-key 2xx pending maintainer credential."
+      note: "Probe. Garbage Bearer/X-API-Key returns 401 {\"detail\":\"Invalid or revoked API key\"}. Cookie-missing (no auth) returns 401 {\"detail\":\"Not authenticated\"}. Matching-slug key returns 200 (observed 2026-09-03, workspace luodaint, Bearer and X-API-Key). Cross-workspace slug returns 403 {\"detail\":\"API key is not valid for this workspace\"}."
     docs_url: https://www.feedjolt.com/en/docs/developers
 
   - id: feedjolt.boards.list
@@ -231,9 +231,9 @@ endpoints:
     summary: "List Boards"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
+      pathParams: {workspace_slug: "luodaint"}
     cost:
       type: free
       value: 0
@@ -241,9 +241,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.posts.list
@@ -256,7 +256,7 @@ endpoints:
     summary: "List Posts"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
       queryParams:
         page: {type: integer, required: false, example: 1}
         page_size: {type: integer, required: false, note: "keep small", example: 5}
@@ -270,7 +270,7 @@ endpoints:
         date_to: {type: string, required: false, note: "YYYY-MM-DD"}
         sort_by: {type: string, required: false, note: "default newest"}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
+      pathParams: {workspace_slug: "luodaint"}
       queryParams: {page_size: 5}
     cost:
       type: free
@@ -279,9 +279,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.posts.search
@@ -294,12 +294,12 @@ endpoints:
     summary: "Search Posts"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
       queryParams:
-        q: {type: string, required: true, example: "MCP", note: "minLength 2, maxLength 200"}
+        q: {type: string, required: true, example: "ab", note: "minLength 2, maxLength 200"}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
-      queryParams: {q: "MCP"}
+      pathParams: {workspace_slug: "luodaint"}
+      queryParams: {q: "ab"}
     cost:
       type: free
       value: 0
@@ -307,9 +307,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.posts.get
@@ -322,10 +322,10 @@ endpoints:
     summary: "Get a post in a workspace"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
-        post_id: {type: string, required: true, example: "52428c9b-971a-4804-a96e-73ce3da4ab17"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
+        post_id: {type: string, required: true, example: "b7e1779e-6c6d-4d07-b916-3dfd3ce5ad15"}
     test_request:
-      pathParams: {workspace_slug: "corvidly", post_id: "52428c9b-971a-4804-a96e-73ce3da4ab17"}
+      pathParams: {workspace_slug: "luodaint", post_id: "b7e1779e-6c6d-4d07-b916-3dfd3ce5ad15"}
     cost:
       type: free
       value: 0
@@ -333,9 +333,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.roadmap.get
@@ -348,9 +348,9 @@ endpoints:
     summary: "Get Workspace Roadmap"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
+      pathParams: {workspace_slug: "luodaint"}
     cost:
       type: free
       value: 0
@@ -358,9 +358,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.changelog.list
@@ -373,12 +373,12 @@ endpoints:
     summary: "List Workspace Changelog"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
       queryParams:
         page: {type: integer, required: false, example: 1}
         page_size: {type: integer, required: false, example: 5}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
+      pathParams: {workspace_slug: "luodaint"}
       queryParams: {page_size: 5}
     cost:
       type: free
@@ -387,9 +387,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.statuses.list
@@ -402,9 +402,9 @@ endpoints:
     summary: "List Statuses"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
+      pathParams: {workspace_slug: "luodaint"}
     cost:
       type: free
       value: 0
@@ -412,9 +412,9 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
 
   - id: feedjolt.tags.list
@@ -427,9 +427,9 @@ endpoints:
     summary: "List Tags"
     input:
       pathParams:
-        workspace_slug: {type: string, required: true, example: "corvidly"}
+        workspace_slug: {type: string, required: true, example: "luodaint"}
     test_request:
-      pathParams: {workspace_slug: "corvidly"}
+      pathParams: {workspace_slug: "luodaint"}
     cost:
       type: free
       value: 0
@@ -437,7 +437,7 @@ endpoints:
       unit: call
       source: docs
       source_url: https://www.feedjolt.com/en
-      checked: "2026-09-02"
+      checked: "2026-09-03"
       confidence: documented
-      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx pending maintainer credential."
+      note: "Included in plan. Auth: Authorization Bearer fjk_ (X-API-Key also works). Live 2xx on 2026-09-03 (slug must match the key). Cross-workspace slug returns 403."
     docs_url: https://api.feedjolt.com/docs
